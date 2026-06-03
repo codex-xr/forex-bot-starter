@@ -24,7 +24,6 @@ WATCHLIST = [
     "EUR_USD",
     "GBP_USD",
     "USD_JPY",
-    "AUD_USD",
     "XAU_USD",
 ]
 
@@ -74,7 +73,7 @@ def scan_symbol(symbol: str, min_confidence: int) -> str:
     )
 
 
-def run_session(session_key: str, min_confidence: int) -> None:
+def build_session_message(session_key: str, min_confidence: int) -> str:
     session = SESSIONS[session_key]
 
     lines = [
@@ -88,9 +87,31 @@ def run_session(session_key: str, min_confidence: int) -> None:
         lines.append(scan_symbol(symbol, min_confidence))
         lines.append("")
 
-    message = "\n".join(lines).strip()
+    return "\n".join(lines).strip()
+
+
+def run_session(session_key: str, min_confidence: int) -> None:
+    message = build_session_message(session_key, min_confidence)
     print(message)
     send_telegram_message(message)
+
+def build_all_sessions_message(min_confidence: int) -> str:
+    lines = [
+        "All Market Sessions Signal Scan",
+        "",
+        "Sessions:",
+    ]
+
+    for session in SESSIONS.values():
+        lines.append(f"- {session.name}: {session.focus}")
+
+    lines.extend(["", "Market scan:"])
+
+    for symbol in WATCHLIST:
+        lines.append(scan_symbol(symbol, min_confidence))
+        lines.append("")
+
+    return "\n".join(lines).strip()
 
 
 def main() -> None:
