@@ -26,6 +26,7 @@ WATCHLIST = [
     "GBP_USD",
     "USD_JPY",
     "XAU_USD",
+    "BTC_USD",
 ]
 
 
