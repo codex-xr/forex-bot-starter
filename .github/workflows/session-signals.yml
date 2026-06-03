@@ -15,11 +15,10 @@ on:
           - overlap
 
   schedule:
-    # Times are UTC. Adjust later if you want different session windows.
-    - cron: "0 0 * * 1-5"   # Tokyo session
-    - cron: "0 8 * * 1-5"   # London session
-    - cron: "0 13 * * 1-5"  # New York session
-    - cron: "0 14 * * 1-5"  # London/New York overlap
+    - cron: "0 0 * * 1-5"
+    - cron: "0 8 * * 1-5"
+    - cron: "0 13 * * 1-5"
+    - cron: "0 14 * * 1-5"
 
 jobs:
   scan:
