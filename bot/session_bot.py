@@ -5,6 +5,7 @@ from pathlib import Path
 from bot.market_data import fetch_live_candles
 from bot.strategy import MovingAverageCrossover, Signal
 from bot.telegram import send_telegram_message
+from bot.signal_engine import analyze_setup
 
 
 @dataclass(frozen=True)
@@ -53,25 +54,10 @@ def scan_symbol(symbol: str, min_confidence: int) -> str:
     try:
         prices = fetch_live_candles(symbol)
     except Exception as exc:
-        return f"{symbol}: Data unavailable ({exc})" 
-    strategy = MovingAverageCrossover(fast_window=5, slow_window=20)
-    signals = strategy.generate(prices)
+        return f"{symbol}: Data unavailable ({exc})"
 
-    signal = signals.iloc[-1]
-    confidence = confidence_score(prices, signal)
-
-    if signal == Signal.HOLD.value or confidence < min_confidence:
-        return f"{symbol}: No clean setup"
-
-    last_price = float(prices['close'].iloc[-1])
-
-    return (
-        f"{symbol}: {signal.upper()} setup\n"
-        f"Confidence: {confidence}%\n"
-        f"Price: {last_price:.5f}\n"
-        f"Reason: Moving-average signal with recent momentum confirmation"
-    )
-
+    report = analyze_setup(symbol, prices, min_confidence=min_confidence)
+    return report.to_message()
 
 def build_session_message(session_key: str, min_confidence: int) -> str:
     session = SESSIONS[session_key]

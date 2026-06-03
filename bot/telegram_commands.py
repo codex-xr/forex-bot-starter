@@ -41,7 +41,7 @@ def handle_message(message: dict) -> None:
 
     if command == "/scanall":
         send_telegram_message("Scanning all market sessions. One moment...", chat_id=chat_id)
-        message_text = build_all_sessions_message(min_confidence=70)
+        message_text = build_all_sessions_message(min_confidence=60)
         send_telegram_message(message_text, chat_id=chat_id)
         return
 
@@ -51,7 +51,7 @@ def handle_message(message: dict) -> None:
 
     if command in COMMANDS:
         send_telegram_message("Scanning market. One moment...", chat_id=chat_id)
-        message_text = build_session_message(COMMANDS[command], min_confidence=70)
+        message_text = build_session_message(COMMANDS[command], min_confidence=60)
         send_telegram_message(message_text, chat_id=chat_id)
         return
 
