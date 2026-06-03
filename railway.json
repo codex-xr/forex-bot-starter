@@ -4,6 +4,6 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python -m bot.session_bot --session london"
+    "startCommand": "python -m bot.session_bot --session london --min-confidence 60"
   }
 }
