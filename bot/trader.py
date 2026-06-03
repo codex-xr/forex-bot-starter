@@ -6,6 +6,7 @@ from bot.config import load_settings
 from bot.data import load_price_data
 from bot.risk import RiskManager
 from bot.strategy import MovingAverageCrossover, Signal
+from bot.telegram import send_telegram_message
 
 def run_backtest(data_path: Path) -> None:
     settings = load_settings()
@@ -23,7 +24,17 @@ def run_backtest(data_path: Path) -> None:
 
         row = prices.loc[index]
         units = risk.position_size(stop_loss_pips=25)
-        broker.place_order(Order(settings.symbol, signal, units, float(row["close"])))
+        order = Order(settings.symbol, signal, units, float(row["close"]))
+        broker.place_order(order)
+
+        send_telegram_message(
+            f"Forex Bot Signal\\n"
+            f"Pair: {order.symbol}\\n"
+            f"Signal: {order.side.upper()}\\n"
+            f"Units: {order.units}\\n"
+            f"Price: {order.price:.5f}\\n"
+            f"Mode: Backtest"
+        )
 
     print(f"Loaded {len(prices)} candles")
     print(f"Generated {len(broker.orders)} paper orders")

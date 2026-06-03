@@ -9,6 +9,7 @@ requires-python = ">=3.10"
 dependencies = [
   "pandas>=2.2",
   "python-dotenv>=1.0",
+  "requests>=2.32",
 ]
 
 [project.optional-dependencies]
