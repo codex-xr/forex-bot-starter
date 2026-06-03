@@ -2,7 +2,7 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
-from bot.data import load_price_data
+from bot.market_data import fetch_live_candles
 from bot.strategy import MovingAverageCrossover, Signal
 from bot.telegram import send_telegram_message
 
@@ -26,7 +26,6 @@ WATCHLIST = [
     "USD_JPY",
     "AUD_USD",
     "XAU_USD",
-    "XAG_USD",
 ]
 
 
@@ -52,12 +51,10 @@ def confidence_score(prices, signal: str) -> int:
 
 
 def scan_symbol(symbol: str, min_confidence: int) -> str:
-    path = symbol_data_path(symbol)
-
-    if not path.exists():
-        return f"{symbol}: No market data yet"
-
-    prices = load_price_data(path)
+    try:
+        prices = fetch_live_candles(symbol)
+    except Exception as exc:
+        return f"{symbol}: Data unavailable ({exc})" 
     strategy = MovingAverageCrossover(fast_window=5, slow_window=20)
     signals = strategy.generate(prices)
 
