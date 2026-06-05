@@ -51,13 +51,13 @@ def confidence_score(prices, signal: str) -> int:
     return min(score, 85)
 
 
-def scan_symbol(symbol: str, min_confidence: int) -> str:
+def scan_symbol(symbol: str, min_confidence: int, session_key: str | None = None) -> str:
     try:
         prices = fetch_live_candles(symbol)
     except Exception as exc:
         return f"{symbol}: Data unavailable ({exc})"
 
-    report = analyze_setup(symbol, prices, min_confidence=min_confidence)
+    report = analyze_setup(symbol, prices, min_confidence=min_confidence, session_key=session_key)
     return report.to_message()
 
 def build_session_message(session_key: str, min_confidence: int) -> str:
@@ -71,7 +71,7 @@ def build_session_message(session_key: str, min_confidence: int) -> str:
     ]
 
     for symbol in WATCHLIST:
-        lines.append(scan_symbol(symbol, min_confidence))
+        lines.append(scan_symbol(symbol, min_confidence, session_key=session_key))
         lines.append("")
 
     return "\n".join(lines).strip()
@@ -95,7 +95,7 @@ def build_all_sessions_message(min_confidence: int) -> str:
     lines.extend(["", "Market scan:"])
 
     for symbol in WATCHLIST:
-        lines.append(scan_symbol(symbol, min_confidence))
+        lines.append(scan_symbol(symbol, min_confidence, session_key=session_key))
         lines.append("")
 
     return "\n".join(lines).strip()
