@@ -2,6 +2,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from bot.symbols import DISPLAY_NAMES
+
 
 @dataclass(frozen=True)
 class SignalReport:
@@ -67,8 +69,10 @@ def analyze_setup(
     min_confidence: int = 60,
     session_key: str | None = None,
 ) -> SignalReport:
+    display_symbol = DISPLAY_NAMES.get(symbol, symbol)
+
     if len(prices) < 80:
-        return SignalReport(symbol, "WAIT", 0, "Unknown", None, None, None, "Not enough candle data")
+        return SignalReport(display_symbol, "WAIT", 0, "Unknown", None, None, None, "Not enough candle data")
 
     data = prices.copy()
     data["ema20"] = data["close"].ewm(span=20, adjust=False).mean()
@@ -241,4 +245,4 @@ def analyze_setup(
     elif short_reasons:
         reason = "; ".join(short_reasons)
 
-    return SignalReport(symbol, "WAIT", confidence, trend, None, None, None, reason)
+    return SignalReport(display_symbol, "WAIT", confidence, trend, None, None, None, reason)

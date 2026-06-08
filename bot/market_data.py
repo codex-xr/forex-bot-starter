@@ -6,6 +6,7 @@ import requests
 from dotenv import load_dotenv
 
 from bot.data import load_price_data
+from bot.symbols import SYMBOL_ALIASES
 
 
 def fetch_live_candles(symbol: str, interval: str = "15min", outputsize: int = 100) -> pd.DataFrame:
@@ -18,7 +19,7 @@ def fetch_live_candles(symbol: str, interval: str = "15min", outputsize: int = 1
             return load_price_data(fallback)
         raise RuntimeError("TWELVE_DATA_API_KEY is missing and no fallback CSV exists")
 
-    api_symbol = symbol.replace("_", "/")
+    api_symbol = SYMBOL_ALIASES.get(symbol, symbol.replace("_", "/"))
 
     response = requests.get(
         "https://api.twelvedata.com/time_series",
