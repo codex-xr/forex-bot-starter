@@ -1,11 +1,9 @@
 import argparse
 from dataclasses import dataclass
-from pathlib import Path
 
 from bot.market_data import fetch_live_candles
-from bot.strategy import MovingAverageCrossover, Signal
-from bot.telegram import send_telegram_message
 from bot.signal_engine import analyze_setup
+from bot.telegram import send_telegram_message
 
 
 @dataclass(frozen=True)
@@ -21,34 +19,25 @@ SESSIONS = {
     "overlap": MarketSession("London/New York Overlap", "Highest liquidity window"),
 }
 
-WATCHLIST = [
-    "EUR_USD",
-    "GBP_USD",
-    "USD_JPY",
-    "XAU_USD",
-    "BTC_USD",
-]
+SESSION_WATCHLISTS = {
+    "london": [
+        "EUR_USD",
+        "GBP_USD",
+        "USD_JPY",
+        "XAU_USD",
+        "BTC_USD",
+        "ETH_USD",
+    ],
+    "new_york": [
+        "US30",
+        "USD_TRY",
+        "GBP_JPY",
+        "GBP_NZD",
+        "USD_ZAR",
+    ],
+}
 
-
-def symbol_data_path(symbol: str) -> Path:
-    return Path("data") / f"{symbol.lower()}.csv"
-
-
-def confidence_score(prices, signal: str) -> int:
-    closes = prices["close"]
-    recent_change = abs((closes.iloc[-1] - closes.iloc[-5]) / closes.iloc[-5])
-
-    if signal == Signal.HOLD.value:
-        return 0
-
-    score = 60
-
-    if recent_change > 0.002:
-        score += 10
-    if recent_change > 0.005:
-        score += 10
-
-    return min(score, 85)
+ALL_WATCHLIST = SESSION_WATCHLISTS["london"] + SESSION_WATCHLISTS["new_york"]
 
 
 def scan_symbol(symbol: str, min_confidence: int, session_key: str | None = None) -> str:
@@ -57,11 +46,18 @@ def scan_symbol(symbol: str, min_confidence: int, session_key: str | None = None
     except Exception as exc:
         return f"{symbol}: Data unavailable ({exc})"
 
-    report = analyze_setup(symbol, prices, min_confidence=min_confidence, session_key=session_key)
+    report = analyze_setup(
+        symbol,
+        prices,
+        min_confidence=min_confidence,
+        session_key=session_key,
+    )
     return report.to_message()
+
 
 def build_session_message(session_key: str, min_confidence: int) -> str:
     session = SESSIONS[session_key]
+    watchlist = SESSION_WATCHLISTS.get(session_key, ALL_WATCHLIST)
 
     lines = [
         f"{session.name} Open",
@@ -70,7 +66,7 @@ def build_session_message(session_key: str, min_confidence: int) -> str:
         "Market scan:",
     ]
 
-    for symbol in WATCHLIST:
+    for symbol in watchlist:
         lines.append(scan_symbol(symbol, min_confidence, session_key=session_key))
         lines.append("")
 
@@ -81,6 +77,7 @@ def run_session(session_key: str, min_confidence: int) -> None:
     message = build_session_message(session_key, min_confidence)
     print(message)
     send_telegram_message(message)
+
 
 def build_all_sessions_message(min_confidence: int) -> str:
     lines = [
@@ -94,8 +91,8 @@ def build_all_sessions_message(min_confidence: int) -> str:
 
     lines.extend(["", "Market scan:"])
 
-    for symbol in WATCHLIST:
-        lines.append(scan_symbol(symbol, min_confidence, session_key=session_key))
+    for symbol in ALL_WATCHLIST:
+        lines.append(scan_symbol(symbol, min_confidence, session_key=None))
         lines.append("")
 
     return "\n".join(lines).strip()
