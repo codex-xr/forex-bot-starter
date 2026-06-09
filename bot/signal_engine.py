@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import numpy as np
 import pandas as pd
 
 from bot.symbols import DISPLAY_NAMES
@@ -51,7 +52,7 @@ def rsi(close: pd.Series, period: int = 14) -> pd.Series:
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = (-delta.clip(upper=0)).rolling(period).mean()
-    rs = gain / loss.replace(0, pd.NA)
+    rs = gain / loss.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
 
 
@@ -81,9 +82,9 @@ def adx(prices: pd.DataFrame, period: int = 14) -> pd.Series:
     minus_dm.loc[(down > up) & (down > 0)] = down
 
     tr_s = tr.rolling(period).mean()
-    pdi = 100 * (plus_dm.rolling(period).mean() / tr_s.replace(0, pd.NA))
-    mdi = 100 * (minus_dm.rolling(period).mean() / tr_s.replace(0, pd.NA))
-    dx = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, pd.NA)
+    pdi = 100 * (plus_dm.rolling(period).mean() / tr_s.replace(0, np.nan))
+    mdi = 100 * (minus_dm.rolling(period).mean() / tr_s.replace(0, np.nan))
+    dx = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)
     return dx.rolling(period).mean()
 
 
