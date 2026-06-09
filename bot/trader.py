@@ -7,6 +7,7 @@ from bot.data import load_price_data
 from bot.risk import RiskManager
 from bot.strategy import MovingAverageCrossover, Signal
 from bot.telegram import send_telegram_message
+from bot.symbols import PIP_VALUES
 
 def run_backtest(data_path: Path) -> None:
     settings = load_settings()
@@ -23,7 +24,8 @@ def run_backtest(data_path: Path) -> None:
             continue
 
         row = prices.loc[index]
-        units = risk.position_size(stop_loss_pips=25)
+        pip_val = PIP_VALUES.get(settings.symbol, 0.0001)
+        units = risk.position_size(stop_loss_pips=25, pip_value_per_unit=pip_val)
         order = Order(settings.symbol, signal, units, float(row["close"]))
         broker.place_order(order)
 
