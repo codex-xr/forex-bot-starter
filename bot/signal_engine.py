@@ -52,7 +52,8 @@ def rsi(close: pd.Series, period: int = 14) -> pd.Series:
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = (-delta.clip(upper=0)).rolling(period).mean()
-    rs = gain / loss.replace(0, np.nan)
+    rs = gain / loss
+    rs = rs.replace([np.inf, -np.inf], 99_999).fillna(0)
     return 100 - (100 / (1 + rs))
 
 

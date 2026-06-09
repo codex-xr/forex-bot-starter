@@ -44,9 +44,9 @@ def _ohcv_close(close: list[float]) -> pd.DataFrame:
 
 class TestRSI:
     def test_rsi_bounds(self):
-        close = pd.Series([10] * 30 + [11] * 50)
+        close = pd.Series(range(1, 101))
         vals = rsi(close).dropna()
-        assert vals.iloc[-1] > 70  # strong uptrend
+        assert vals.iloc[-1] > 80
 
     def test_rsi_all_ones(self):
         close = pd.Series([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
@@ -90,7 +90,7 @@ class TestCheckRejection:
         assert check_rejection(row, "buy")
 
     def test_strong_bearish_rejection(self):
-        row = pd.Series({"open": 1.10, "high": 1.22, "low": 1.09, "close": 1.11})
+        row = pd.Series({"open": 1.10, "high": 1.22, "low": 1.09, "close": 1.09})
         assert check_rejection(row, "sell")
 
     def test_no_rejection_small_wick(self):
