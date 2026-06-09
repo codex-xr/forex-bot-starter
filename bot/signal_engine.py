@@ -53,8 +53,11 @@ def rsi(close: pd.Series, period: int = 14) -> pd.Series:
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = (-delta.clip(upper=0)).rolling(period).mean()
     rs = gain / loss
-    rs = rs.replace([np.inf, -np.inf], 99_999).fillna(0)
-    return 100 - (100 / (1 + rs))
+    rs = rs.replace([np.inf, -np.inf], 99_999)
+    rsi_val = 100 - (100 / (1 + rs))
+    both_zero = (gain == 0) & (loss == 0)
+    rsi_val[both_zero] = 50.0
+    return rsi_val
 
 
 def atr(prices: pd.DataFrame, period: int = 14) -> pd.Series:
