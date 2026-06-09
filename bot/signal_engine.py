@@ -23,7 +23,6 @@ class SignalReport:
                 f"Confidence: {self.confidence}%\n"
                 f"Reason: {self.reason}"
             )
-
         return (
             f"{self.symbol}: {self.action} setup\n"
             f"Trend: {self.trend}\n"
@@ -36,6 +35,18 @@ class SignalReport:
         )
 
 
+@dataclass(frozen=True)
+class StrategySignal:
+    name: str
+    action: str
+    confidence: int
+    reason: str
+
+
+# ---------------------------------------------------------------------------
+# Technical indicators
+# ---------------------------------------------------------------------------
+
 def rsi(close: pd.Series, period: int = 14) -> pd.Series:
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
@@ -45,64 +56,437 @@ def rsi(close: pd.Series, period: int = 14) -> pd.Series:
 
 
 def atr(prices: pd.DataFrame, period: int = 14) -> pd.Series:
-    high_low = prices["high"] - prices["low"]
-    high_close = (prices["high"] - prices["close"].shift()).abs()
-    low_close = (prices["low"] - prices["close"].shift()).abs()
-    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return true_range.rolling(period).mean()
+    hl = prices["high"] - prices["low"]
+    hc = (prices["high"] - prices["close"].shift()).abs()
+    lc = (prices["low"] - prices["close"].shift()).abs()
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
+    return tr.rolling(period).mean()
 
 
 def adx(prices: pd.DataFrame, period: int = 14) -> pd.Series:
     high = prices["high"]
     low = prices["low"]
     close = prices["close"]
+    tr = pd.concat([
+        high - low,
+        (high - close.shift()).abs(),
+        (low - close.shift()).abs(),
+    ], axis=1).max(axis=1)
 
-    high_low = high - low
-    high_close = (high - close.shift()).abs()
-    low_close = (low - close.shift()).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-
-    up_move = high - high.shift()
-    down_move = low.shift() - low
-
+    up = high - high.shift()
+    down = low.shift() - low
     plus_dm = pd.Series(0.0, index=prices.index)
     minus_dm = pd.Series(0.0, index=prices.index)
+    plus_dm.loc[(up > down) & (up > 0)] = up
+    minus_dm.loc[(down > up) & (down > 0)] = down
 
-    plus_mask = (up_move > down_move) & (up_move > 0)
-    minus_mask = (down_move > up_move) & (down_move > 0)
-
-    plus_dm.loc[plus_mask] = up_move.loc[plus_mask]
-    minus_dm.loc[minus_mask] = down_move.loc[minus_mask]
-
-    tr_smoothed = tr.rolling(period).mean()
-    plus_dm_smoothed = plus_dm.rolling(period).mean()
-    minus_dm_smoothed = minus_dm.rolling(period).mean()
-
-    plus_di = 100 * (plus_dm_smoothed / tr_smoothed.replace(0, pd.NA))
-    minus_di = 100 * (minus_dm_smoothed / tr_smoothed.replace(0, pd.NA))
-
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, pd.NA)
+    tr_s = tr.rolling(period).mean()
+    pdi = 100 * (plus_dm.rolling(period).mean() / tr_s.replace(0, pd.NA))
+    mdi = 100 * (minus_dm.rolling(period).mean() / tr_s.replace(0, pd.NA))
+    dx = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, pd.NA)
     return dx.rolling(period).mean()
 
 
 def macd(close: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
-    ema12 = close.ewm(span=12, adjust=False).mean()
-    ema26 = close.ewm(span=26, adjust=False).mean()
-    macd_line = ema12 - ema26
-    signal_line = macd_line.ewm(span=9, adjust=False).mean()
-    hist = macd_line - signal_line
-    return macd_line, signal_line, hist
+    e12 = close.ewm(span=12, adjust=False).mean()
+    e26 = close.ewm(span=26, adjust=False).mean()
+    line = e12 - e26
+    signal = line.ewm(span=9, adjust=False).mean()
+    return line, signal, line - signal
 
 
-def candle_rejection(row: pd.Series, direction: str) -> bool:
+def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    d = df.copy()
+    d["ema20"] = d["close"].ewm(span=20, adjust=False).mean()
+    d["ema50"] = d["close"].ewm(span=50, adjust=False).mean()
+    d["ema100"] = d["close"].ewm(span=100, adjust=False).mean()
+    d["ema200"] = d["close"].ewm(span=200, adjust=False).mean()
+    d["rsi"] = rsi(d["close"])
+    d["atr"] = atr(d)
+    d["adx"] = adx(d)
+    d["macd_line"], d["macd_signal"], d["macd_hist"] = macd(d["close"])
+    d["sma20"] = d["close"].rolling(20).mean()
+    d["std20"] = d["close"].rolling(20).std()
+    d["upper_band"] = d["sma20"] + 2.5 * d["std20"]
+    d["lower_band"] = d["sma20"] - 2.5 * d["std20"]
+    return d
+
+
+# ---------------------------------------------------------------------------
+# Rejection candle detection (stricter)
+# ---------------------------------------------------------------------------
+
+def check_rejection(row: pd.Series, direction: str) -> bool:
     body = abs(row["close"] - row["open"])
     upper_wick = row["high"] - max(row["open"], row["close"])
     lower_wick = min(row["open"], row["close"]) - row["low"]
+    total_range = row["high"] - row["low"]
+
+    if total_range == 0 or body == 0:
+        return False
 
     if direction == "buy":
-        return lower_wick > body * 1.2 and row["close"] > row["open"]
-    return upper_wick > body * 1.2 and row["close"] < row["open"]
+        return (lower_wick > body * 2.0
+                and lower_wick >= total_range * 0.4
+                and row["close"] > row["open"])
+    return (upper_wick > body * 2.0
+            and upper_wick >= total_range * 0.4
+            and row["close"] < row["open"])
 
+
+# ---------------------------------------------------------------------------
+# Higher-timeframe bias (EMA50 slope over last 5 bars)
+# ---------------------------------------------------------------------------
+
+def htf_bias(data: pd.DataFrame) -> str:
+    ema50 = data["ema50"]
+    slope = ema50.iloc[-1] - ema50.iloc[-5]
+    if slope > 0:
+        return "bullish"
+    if slope < 0:
+        return "bearish"
+    return "neutral"
+
+
+# ---------------------------------------------------------------------------
+# SL/TP multipliers per asset class
+# ---------------------------------------------------------------------------
+
+def _sl_tp_mult(symbol: str) -> tuple[float, float]:
+    if symbol == "XAU_USD":
+        return 2.5, 5.0
+    if symbol in ("BTC_USD", "ETH_USD"):
+        return 2.0, 4.0
+    return 1.5, 3.0
+
+
+# ---------------------------------------------------------------------------
+# Strategy 1 — SMC Liquidity Sweep (ranging & trending)
+# ---------------------------------------------------------------------------
+
+def _smc_sweep(data: pd.DataFrame) -> StrategySignal:
+    last = data.iloc[-1]
+    close = float(last["close"])
+
+    ref = data.iloc[-31:-1]
+    support = ref["low"].min()
+    resistance = ref["high"].max()
+
+    if last["low"] < support and close > support and check_rejection(last, "buy"):
+        return StrategySignal(
+            "SMC Sweep", "BUY", 88,
+            f"Price swept below support ({support:.2f}) and closed back above with rejection",
+        )
+    if last["high"] > resistance and close < resistance and check_rejection(last, "sell"):
+        return StrategySignal(
+            "SMC Sweep", "SELL", 88,
+            f"Price swept above resistance ({resistance:.2f}) and closed back below with rejection",
+        )
+    return StrategySignal("SMC Sweep", "HOLD", 0, "")
+
+
+# ---------------------------------------------------------------------------
+# Strategy 2 — London Breakout (trending, ADX >= 22)
+# ---------------------------------------------------------------------------
+
+def _london_breakout(data: pd.DataFrame, session_key: str | None) -> StrategySignal:
+    last = data.iloc[-1]
+    prev = data.iloc[-2]
+    close = float(last["close"])
+    last_adx = float(last["adx"]) if pd.notna(last["adx"]) else -1
+
+    is_london = session_key == "london" or (7 <= last["time"].hour <= 15)
+    if not is_london or last_adx < 22:
+        return StrategySignal("London Breakout", "HOLD", 0, "")
+
+    mask = (
+        (data["time"].dt.date == last["time"].date())
+        & (data["time"].dt.hour >= 0) & (data["time"].dt.hour < 7)
+    )
+    asian = data.loc[mask]
+    if len(asian) < 4:
+        return StrategySignal("London Breakout", "HOLD", 0, "")
+
+    a_high, a_low = asian["high"].max(), asian["low"].min()
+
+    if prev["close"] <= a_high < close and close > last["open"]:
+        return StrategySignal("London Breakout", "BUY", 85,
+                              f"Broke above Asian High ({a_high:.2f})")
+    if prev["close"] >= a_low > close and close < last["open"]:
+        return StrategySignal("London Breakout", "SELL", 85,
+                              f"Broke below Asian Low ({a_low:.2f})")
+    return StrategySignal("London Breakout", "HOLD", 0, "")
+
+
+# ---------------------------------------------------------------------------
+# Strategy 3 — EMA Ribbon Pullback (trending, ADX >= 22)
+# ---------------------------------------------------------------------------
+
+def _ema_pullback(data: pd.DataFrame) -> StrategySignal:
+    last = data.iloc[-1]
+    prev = data.iloc[-2]
+    close = float(last["close"])
+
+    last_adx = float(last["adx"]) if pd.notna(last["adx"]) else -1
+    if last_adx < 22:
+        return StrategySignal("EMA Pullback", "HOLD", 0, "")
+
+    bull = last["ema20"] > last["ema50"] > last["ema100"] > last["ema200"]
+    bear = last["ema20"] < last["ema50"] < last["ema100"] < last["ema200"]
+
+    if bull and prev["low"] <= last["ema50"] <= close and check_rejection(last, "buy") and last["macd_hist"] > 0:
+        return StrategySignal("EMA Pullback", "BUY", 82,
+                              "Pullback to EMA 50 in bullish trend, MACD confirming")
+    if bear and prev["high"] >= last["ema50"] >= close and check_rejection(last, "sell") and last["macd_hist"] < 0:
+        return StrategySignal("EMA Pullback", "SELL", 82,
+                              "Pullback to EMA 50 in bearish trend, MACD confirming")
+    return StrategySignal("EMA Pullback", "HOLD", 0, "")
+
+
+# ---------------------------------------------------------------------------
+# Strategy 4 — Mean Reversion (ranging, ADX < 22)
+# ---------------------------------------------------------------------------
+
+def _mean_reversion(data: pd.DataFrame) -> StrategySignal:
+    last = data.iloc[-1]
+
+    last_adx = float(last["adx"]) if pd.notna(last["adx"]) else 999
+    if last_adx >= 22:
+        return StrategySignal("Mean Reversion", "HOLD", 0, "")
+
+    if last["low"] <= last["lower_band"] and last["rsi"] <= 35 and check_rejection(last, "buy"):
+        return StrategySignal("Mean Reversion", "BUY", 80,
+                              f"Lower BB touch ({last['lower_band']:.2f}), RSI {last['rsi']:.0f}, bullish rejection")
+    if last["high"] >= last["upper_band"] and last["rsi"] >= 65 and check_rejection(last, "sell"):
+        return StrategySignal("Mean Reversion", "SELL", 80,
+                              f"Upper BB touch ({last['upper_band']:.2f}), RSI {last['rsi']:.0f}, bearish rejection")
+    return StrategySignal("Mean Reversion", "HOLD", 0, "")
+
+
+# ---------------------------------------------------------------------------
+# Fallback — 5-factor weighted checklist
+# ---------------------------------------------------------------------------
+
+_FACTOR_WEIGHTS = [
+    ("trend", 0.30),
+    ("structure", 0.25),
+    ("momentum", 0.20),
+    ("volatility", 0.15),
+    ("price_action", 0.10),
+]
+
+
+def _f_trend(data: pd.DataFrame) -> tuple[int, int, list[str], list[str]]:
+    last = data.iloc[-1]
+    lg, sg = 0, 0
+    lr, sr = [], []
+
+    bull_ema = last["close"] > last["ema20"] > last["ema50"]
+    bear_ema = last["close"] < last["ema20"] < last["ema50"]
+    bull_ribbon = last["ema20"] > last["ema50"] > last["ema100"] > last["ema200"]
+    bear_ribbon = last["ema20"] < last["ema50"] < last["ema100"] < last["ema200"]
+
+    if bull_ema:
+        lg += 50
+        lr.append("bullish EMA 20/50")
+    if bear_ema:
+        sg += 50
+        sr.append("bearish EMA 20/50")
+    if bull_ribbon:
+        lg += 50
+        lr.append("EMA ribbon bull-aligned")
+    if bear_ribbon:
+        sg += 50
+        sr.append("EMA ribbon bear-aligned")
+
+    return lg, sg, lr, sr
+
+
+def _f_structure(data: pd.DataFrame) -> tuple[int, int, list[str], list[str]]:
+    recent = data.iloc[-30:]
+    prior = data.iloc[-60:-30]
+    lg, sg = 0, 0
+    lr, sr = [], []
+
+    if recent["high"].max() > prior["high"].max() and recent["low"].min() > prior["low"].min():
+        lg = 100
+        lr.append("higher highs/lows")
+    if recent["high"].max() < prior["high"].max() and recent["low"].min() < prior["low"].min():
+        sg = 100
+        sr.append("lower highs/lows")
+
+    return lg, sg, lr, sr
+
+
+def _f_momentum(data: pd.DataFrame) -> tuple[int, int, list[str], list[str]]:
+    last, prev = data.iloc[-1], data.iloc[-2]
+    lg, sg = 0, 0
+    lr, sr = [], []
+
+    rsi = float(last["rsi"]) if pd.notna(last["rsi"]) else 50
+    if 50 <= rsi <= 70:
+        lg += 50
+        lr.append(f"RSI {rsi:.0f}")
+    if 30 <= rsi <= 50:
+        sg += 50
+        sr.append(f"RSI {rsi:.0f}")
+
+    macd_rising = last["macd_hist"] > prev["macd_hist"]
+    macd_falling = last["macd_hist"] < prev["macd_hist"]
+    if last["macd_hist"] > 0 and macd_rising:
+        lg += 50
+        lr.append("MACD rising bullish")
+    if last["macd_hist"] < 0 and macd_falling:
+        sg += 50
+        sr.append("MACD falling bearish")
+
+    return lg, sg, lr, sr
+
+
+def _f_volatility(data: pd.DataFrame) -> tuple[int, int, list[str], list[str]]:
+    last = data.iloc[-1]
+    recent = data.iloc[-30:]
+    prior = data.iloc[-60:-30]
+    lg, sg = 0, 0
+    lr, sr = [], []
+
+    last_adx = float(last["adx"]) if pd.notna(last["adx"]) else 0
+    if last_adx >= 25:
+        lg += 30
+        sg += 30
+        lr.append(f"ADX {last_adx:.0f}")
+        sr.append(f"ADX {last_adx:.0f}")
+
+    recent_range = recent["high"].max() - recent["low"].min()
+    prior_range = prior["high"].max() - prior["low"].min()
+    if prior_range > 0 and recent_range < prior_range * 0.7:
+        close = float(last["close"])
+        if close > recent["high"].iloc[:-1].max():
+            lg += 70
+            lr.append("compression breakout up")
+        elif close < recent["low"].iloc[:-1].min():
+            sg += 70
+            sr.append("compression breakout down")
+
+    return lg, sg, lr, sr
+
+
+def _f_price_action(data: pd.DataFrame) -> tuple[int, int, list[str], list[str]]:
+    last = data.iloc[-1]
+    lg, sg = 0, 0
+    lr, sr = [], []
+
+    if check_rejection(last, "buy"):
+        lg = 100
+        lr.append("bullish rejection")
+    elif check_rejection(last, "sell"):
+        sg = 100
+        sr.append("bearish rejection")
+
+    return lg, sg, lr, sr
+
+
+_FALLBACK_SCORERS = [_f_trend, _f_structure, _f_momentum, _f_volatility, _f_price_action]
+
+
+def _fallback_scoring(data: pd.DataFrame) -> tuple[str, int, str, int, str]:
+    total_long = 0.0
+    total_short = 0.0
+    all_lr, all_sr = [], []
+
+    for scorer, (_, weight) in zip(_FALLBACK_SCORERS, _FACTOR_WEIGHTS):
+        lg, sg, lr, sr = scorer(data)
+        total_long += lg * weight
+        total_short += sg * weight
+        all_lr.extend(lr)
+        all_sr.extend(sr)
+
+    long_score = int(total_long)
+    short_score = int(total_short)
+
+    if long_score >= 60 and long_score >= short_score + 8:
+        return "BUY", min(long_score, 95), "; ".join(all_lr), long_score, short_score
+    if short_score >= 60 and short_score >= long_score + 8:
+        return "SELL", min(short_score, 95), "; ".join(all_sr), long_score, short_score
+
+    return "WAIT", max(long_score, short_score), "Setup not strong enough", long_score, short_score
+
+
+# ---------------------------------------------------------------------------
+# Quality gate — picks the best signal from strategies
+# ---------------------------------------------------------------------------
+
+def _make_report(symbol: str, action: str, confidence: int, trend: str,
+                 close: float, atr_val: float, reason: str) -> SignalReport:
+    sl_mult, tp_mult = _sl_tp_mult(symbol)
+    if action == "BUY":
+        sl = close - atr_val * sl_mult
+        tp = close + atr_val * tp_mult
+    elif action == "SELL":
+        sl = close + atr_val * sl_mult
+        tp = close - atr_val * tp_mult
+    else:
+        sl = tp = None
+
+    return SignalReport(
+        symbol=DISPLAY_NAMES.get(symbol, symbol),
+        action=action,
+        confidence=confidence,
+        trend=trend,
+        entry=close if action != "WAIT" else None,
+        stop_loss=sl,
+        take_profit=tp,
+        reason=reason,
+    )
+
+
+def _quality_gate(
+    strategies: list[StrategySignal],
+    bias: str,
+    data: pd.DataFrame,
+    symbol: str,
+    min_confidence: int,
+) -> SignalReport:
+    last = data.iloc[-1]
+    close = float(last["close"])
+    atr_val = float(last["atr"]) if pd.notna(last["atr"]) else close * 0.002
+    trend = "Bullish" if bias == "bullish" else "Bearish" if bias == "bearish" else "Mixed"
+
+    active = [s for s in strategies if s.action != "HOLD"]
+    buys = [s for s in active if s.action == "BUY"]
+    sells = [s for s in active if s.action == "SELL"]
+
+    best_buy = max(buys, key=lambda s: s.confidence) if buys else None
+    best_sell = max(sells, key=lambda s: s.confidence) if sells else None
+
+    for cand, direction in [(best_buy, "BUY"), (best_sell, "SELL")]:
+        if cand is None:
+            continue
+        same = buys if direction == "BUY" else sells
+
+        # High confidence with HTF alignment
+        if cand.confidence >= 85 and bias == direction.lower():
+            return _make_report(symbol, direction, cand.confidence, trend, close, atr_val, cand.reason)
+
+        # Two different strategies agreeing
+        if len(same) >= 2 and len({s.name for s in same}) >= 2:
+            avg = sum(s.confidence for s in same) // len(same)
+            reason = " | ".join(s.reason for s in same)
+            return _make_report(symbol, direction, avg, trend, close, atr_val, reason)
+
+    # Fallback to scoring
+    fb_action, fb_conf, fb_reason, long_s, short_s = _fallback_scoring(data)
+    if fb_action != "WAIT" and fb_conf >= min_confidence:
+        return _make_report(symbol, fb_action, fb_conf, trend, close, atr_val, fb_reason)
+
+    # Nothing qualified → WAIT
+    fallback_conf = max(long_s, short_s)
+    return _make_report(symbol, "WAIT", fallback_conf, trend, close, atr_val, fb_reason)
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
 
 def analyze_setup(
     symbol: str,
@@ -110,333 +494,21 @@ def analyze_setup(
     min_confidence: int = 60,
     session_key: str | None = None,
 ) -> SignalReport:
-    display_symbol = DISPLAY_NAMES.get(symbol, symbol)
-
     if len(prices) < 80:
-        return SignalReport(display_symbol, "WAIT", 0, "Unknown", None, None, None, "Not enough candle data")
-
-    data = prices.copy()
-    data["ema20"] = data["close"].ewm(span=20, adjust=False).mean()
-    data["ema50"] = data["close"].ewm(span=50, adjust=False).mean()
-    data["ema100"] = data["close"].ewm(span=100, adjust=False).mean()
-    data["ema200"] = data["close"].ewm(span=200, adjust=False).mean()
-    data["rsi"] = rsi(data["close"])
-    data["atr"] = atr(data)
-    data["adx"] = adx(data)
-    
-    macd_line, signal_line, macd_hist = macd(data["close"])
-    data["macd_hist"] = macd_hist
-
-    # Bollinger Bands (20, 2.5 std)
-    data["sma20"] = data["close"].rolling(20).mean()
-    data["std20"] = data["close"].rolling(20).std()
-    data["upper_band"] = data["sma20"] + (2.5 * data["std20"])
-    data["lower_band"] = data["sma20"] - (2.5 * data["std20"])
-
-    last = data.iloc[-1]
-    prev = data.iloc[-2]
-    close = float(last["close"])
-    atr_value = float(last["atr"]) if pd.notna(last["atr"]) else close * 0.002
-    last_adx = float(last["adx"]) if pd.notna(last["adx"]) else 25.0
-
-    recent = data.iloc[-30:]
-    previous = data.iloc[-60:-30]
-
-    recent_high = recent["high"].max()
-    recent_low = recent["low"].min()
-    previous_high = previous["high"].max()
-    previous_low = previous["low"].min()
-
-    # Asset-specific Stop Loss and Take Profit Multipliers
-    sl_multiplier = 1.5
-    tp_multiplier = 3.0
-
-    if symbol == "XAU_USD":
-        sl_multiplier = 2.5
-        tp_multiplier = 5.0
-    elif symbol in ("BTC_USD", "ETH_USD"):
-        sl_multiplier = 2.0
-        tp_multiplier = 4.0
-
-    # -------------------------------------------------------------
-    # STRATEGY 1: London Breakout
-    # -------------------------------------------------------------
-    london_signal = "HOLD"
-    london_reason = ""
-    last_time = last["time"]
-    last_hour = last_time.hour
-
-    if session_key == "london" or (7 <= last_hour <= 15):
-        if last_adx >= 22:
-            same_day_mask = (data["time"].dt.date == last_time.date()) & (data["time"].dt.hour >= 0) & (data["time"].dt.hour < 7)
-            asian_candles = data.loc[same_day_mask]
-            
-            if len(asian_candles) >= 4:
-                asian_high = asian_candles["high"].max()
-                asian_low = asian_candles["low"].min()
-                
-                if prev["close"] <= asian_high < close and close > last["open"]:
-                    london_signal = "BUY"
-                    london_reason = f"London Breakout: Price broke above Asian High of {asian_high:.2f} during London Session"
-                elif prev["close"] >= asian_low > close and close < last["open"]:
-                    london_signal = "SELL"
-                    london_reason = f"London Breakout: Price broke below Asian Low of {asian_low:.2f} during London Session"
-
-    # -------------------------------------------------------------
-    # STRATEGY 2: Mean Reversion (Bollinger Bands + RSI)
-    # -------------------------------------------------------------
-    mr_signal = "HOLD"
-    mr_reason = ""
-
-    if last_adx < 25:
-        if last["low"] <= last["lower_band"] and last["rsi"] <= 35 and candle_rejection(last, "buy"):
-            mr_signal = "BUY"
-            mr_reason = f"Mean Reversion: Price touched Lower BB ({last['lower_band']:.2f}) and RSI was oversold ({last['rsi']:.1f}) with bullish rejection"
-        elif last["high"] >= last["upper_band"] and last["rsi"] >= 65 and candle_rejection(last, "sell"):
-            mr_signal = "SELL"
-            mr_reason = f"Mean Reversion: Price touched Upper BB ({last['upper_band']:.2f}) and RSI was overbought ({last['rsi']:.1f}) with bearish rejection"
-
-    # -------------------------------------------------------------
-    # STRATEGY 3: SMC Liquidity Sweep
-    # -------------------------------------------------------------
-    sweep_signal = "HOLD"
-    sweep_reason = ""
-
-    recent_candles = data.iloc[-31:-1]
-    support_level = recent_candles["low"].min()
-    resistance_level = recent_candles["high"].max()
-
-    if last["low"] < support_level and close > support_level and candle_rejection(last, "buy"):
-        sweep_signal = "BUY"
-        sweep_reason = f"Liquidity Sweep: Price swept below key support of {support_level:.2f} and closed back above with bullish rejection"
-    elif last["high"] > resistance_level and close < resistance_level and candle_rejection(last, "sell"):
-        sweep_signal = "SELL"
-        sweep_reason = f"Liquidity Sweep: Price swept above key resistance of {resistance_level:.2f} and closed back below with bearish rejection"
-
-    # -------------------------------------------------------------
-    # STRATEGY 4: EMA Ribbon Pullback (MACD Confirmed)
-    # -------------------------------------------------------------
-    pullback_signal = "HOLD"
-    pullback_reason = ""
-
-    if last_adx >= 22:
-        is_bullish_trend = last["ema20"] > last["ema50"] > last["ema100"] > last["ema200"]
-        is_bearish_trend = last["ema20"] < last["ema50"] < last["ema100"] < last["ema200"]
-
-        if is_bullish_trend:
-            pullback_touch = last["low"] <= last["ema50"] and close > last["ema50"]
-            if pullback_touch and candle_rejection(last, "buy") and last["macd_hist"] > 0:
-                pullback_signal = "BUY"
-                pullback_reason = "EMA Pullback: Price pulled back to EMA 50 support in a strong bullish trend with MACD confirmation"
-        elif is_bearish_trend:
-            pullback_touch = last["high"] >= last["ema50"] and close < last["ema50"]
-            if pullback_touch and candle_rejection(last, "sell") and last["macd_hist"] < 0:
-                pullback_signal = "SELL"
-                pullback_reason = "EMA Pullback: Price pulled back to EMA 50 resistance in a strong bearish trend with MACD confirmation"
-
-    # -------------------------------------------------------------
-    # Select Strategy Signal (Prioritized)
-    # -------------------------------------------------------------
-    strategy_action = "WAIT"
-    strategy_reason = ""
-    strategy_confidence = 0
-
-    if sweep_signal != "HOLD":
-        strategy_action = sweep_signal
-        strategy_reason = sweep_reason
-        strategy_confidence = 88
-    elif london_signal != "HOLD":
-        strategy_action = london_signal
-        strategy_reason = london_reason
-        strategy_confidence = 85
-    elif pullback_signal != "HOLD":
-        strategy_action = pullback_signal
-        strategy_reason = pullback_reason
-        strategy_confidence = 82
-    elif mr_signal != "HOLD":
-        strategy_action = mr_signal
-        strategy_reason = mr_reason
-        strategy_confidence = 80
-
-    if strategy_action != "WAIT":
-        stop_loss = close - (atr_value * sl_multiplier) if strategy_action == "BUY" else close + (atr_value * sl_multiplier)
-        take_profit = close + (atr_value * tp_multiplier) if strategy_action == "BUY" else close - (atr_value * tp_multiplier)
         return SignalReport(
-            symbol=display_symbol,
-            action=strategy_action,
-            confidence=strategy_confidence,
-            trend="Bullish" if strategy_action == "BUY" else "Bearish",
-            entry=close,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            reason=strategy_reason,
+            DISPLAY_NAMES.get(symbol, symbol),
+            "WAIT", 0, "Unknown", None, None, None,
+            "Not enough candle data",
         )
 
-    # -------------------------------------------------------------
-    # FALLBACK: Accumulative Checklist Point Scoring
-    # -------------------------------------------------------------
-    long_score = 0
-    short_score = 0
-    long_reasons = []
-    short_reasons = []
+    data = compute_indicators(prices)
+    bias = htf_bias(data)
 
-    # 1. EMA 20/50 trend.
-    if close > last["ema20"] > last["ema50"]:
-        long_score += 15
-        long_reasons.append("EMA 20/50 trend is bullish")
-    if close < last["ema20"] < last["ema50"]:
-        short_score += 15
-        short_reasons.append("EMA 20/50 trend is bearish")
+    strategies = [
+        _smc_sweep(data),
+        _london_breakout(data, session_key),
+        _ema_pullback(data),
+        _mean_reversion(data),
+    ]
 
-    # 2. Market structure: higher highs/higher lows or lower highs/lower lows.
-    if recent_high > previous_high and recent_low > previous_low:
-        long_score += 18
-        long_reasons.append("market structure shows higher highs and higher lows")
-    if recent_high < previous_high and recent_low < previous_low:
-        short_score += 18
-        short_reasons.append("market structure shows lower highs and lower lows")
-
-    # 3. Pullback + trend continuation.
-    if last["low"] <= last["ema20"] and close > last["ema20"] and candle_rejection(last, "buy"):
-        long_score += 18
-        long_reasons.append("pullback into EMA support with bullish rejection")
-    if last["high"] >= last["ema20"] and close < last["ema20"] and candle_rejection(last, "sell"):
-        short_score += 18
-        short_reasons.append("pullback into EMA resistance with bearish rejection")
-
-    # 4. Break and retest.
-    resistance = data["high"].iloc[-40:-5].max()
-    support = data["low"].iloc[-40:-5].min()
-
-    if data["close"].iloc[-5:-1].max() > resistance and last["low"] <= resistance <= close:
-        long_score += 16
-        long_reasons.append("break and retest of resistance")
-    if data["close"].iloc[-5:-1].min() < support and last["high"] >= support >= close:
-        short_score += 16
-        short_reasons.append("break and retest of support")
-
-    # 5. Liquidity sweep reversal.
-    if last["low"] < support and close > support and candle_rejection(last, "buy"):
-        long_score += 18
-        long_reasons.append("liquidity sweep below support with bullish reversal")
-    if last["high"] > resistance and close < resistance and candle_rejection(last, "sell"):
-        short_score += 18
-        short_reasons.append("liquidity sweep above resistance with bearish reversal")
-
-    # 6. Higher timeframe bias approximated with slow EMA.
-    if close > data["ema50"].iloc[-1] and data["ema50"].iloc[-1] > data["ema50"].iloc[-10]:
-        long_score += 12
-        long_reasons.append("higher timeframe bias is bullish")
-    if close < data["ema50"].iloc[-1] and data["ema50"].iloc[-1] < data["ema50"].iloc[-10]:
-        short_score += 12
-        short_reasons.append("higher timeframe bias is bearish")
-
-    # 7. Supply and demand reaction.
-    impulse_size = data["close"].diff().abs()
-    impulse_threshold = impulse_size.rolling(30).mean().iloc[-1] * 1.8
-
-    if abs(prev["close"] - prev["open"]) > impulse_threshold:
-        if prev["close"] > prev["open"] and last["low"] <= prev["open"] <= close:
-            long_score += 12
-            long_reasons.append("reaction from demand zone")
-        if prev["close"] < prev["open"] and last["high"] >= prev["open"] >= close:
-            short_score += 12
-            short_reasons.append("reaction from supply zone")
-
-    # 8. London open expansion.
-    if session_key == "london":
-        if close > recent["close"].iloc[-10:].mean() and last["rsi"] > 55:
-            long_score += 10
-            long_reasons.append("London open expansion supports bullish momentum")
-        if close < recent["close"].iloc[-10:].mean() and last["rsi"] < 45:
-            short_score += 10
-            short_reasons.append("London open expansion supports bearish momentum")
-
-    # 9. New York continuation.
-    if session_key == "new_york":
-        london_direction = data["close"].iloc[-20] < data["close"].iloc[-5]
-        if london_direction and close > last["ema20"]:
-            long_score += 10
-            long_reasons.append("New York continuation of prior bullish direction")
-        if not london_direction and close < last["ema20"]:
-            short_score += 10
-            short_reasons.append("New York continuation of prior bearish direction")
-
-    # 10. Volatility compression breakout.
-    recent_range = recent["high"].max() - recent["low"].min()
-    prior_range = previous["high"].max() - previous["low"].min()
-
-    if prior_range > 0 and recent_range < prior_range * 0.7:
-        if close > recent["high"].iloc[:-1].max():
-            long_score += 14
-            long_reasons.append("volatility compression breakout upward")
-        if close < recent["low"].iloc[:-1].min():
-            short_score += 14
-            short_reasons.append("volatility compression breakout downward")
-
-    # 11. RSI momentum confirmation.
-    if 50 <= last["rsi"] <= 70:
-        long_score += 10
-        long_reasons.append("RSI supports bullish momentum")
-    if 30 <= last["rsi"] <= 50:
-        short_score += 10
-        short_reasons.append("RSI supports bearish momentum")
-
-    # 12. Recent candle pressure.
-    if data["close"].iloc[-3:].is_monotonic_increasing:
-        long_score += 8
-        long_reasons.append("recent candles show buying pressure")
-    if data["close"].iloc[-3:].is_monotonic_decreasing:
-        short_score += 8
-        short_reasons.append("recent candles show selling pressure")
-
-    # Apply ADX Filter to fallback trend score
-    if last_adx < 20:
-        long_score -= 15
-        short_score -= 15
-        long_reasons.append(f"ADX low ({last_adx:.1f})")
-        short_reasons.append(f"ADX low ({last_adx:.1f})")
-    elif last_adx < 25:
-        long_score -= 8
-        short_score -= 8
-        long_reasons.append(f"ADX weak ({last_adx:.1f})")
-        short_reasons.append(f"ADX weak ({last_adx:.1f})")
-
-    if long_score >= min_confidence and long_score >= short_score + 8:
-        stop_loss = close - (atr_value * sl_multiplier)
-        take_profit = close + (atr_value * tp_multiplier)
-        return SignalReport(
-            symbol=display_symbol,
-            action="BUY",
-            confidence=min(long_score, 95),
-            trend="Bullish",
-            entry=close,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            reason="Checklist: " + "; ".join(long_reasons),
-        )
-
-    if short_score >= min_confidence and short_score >= long_score + 8:
-        stop_loss = close + (atr_value * sl_multiplier)
-        take_profit = close - (atr_value * tp_multiplier)
-        return SignalReport(
-            symbol=display_symbol,
-            action="SELL",
-            confidence=min(short_score, 95),
-            trend="Bearish",
-            entry=close,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            reason="Checklist: " + "; ".join(short_reasons),
-        )
-
-    trend = "Bullish" if long_score > short_score else "Bearish" if short_score > long_score else "Mixed"
-    confidence = min(max(long_score, short_score), 95)
-    reason = "Setup is not strong enough yet"
-
-    if long_reasons and long_score >= short_score:
-        reason = "; ".join(long_reasons)
-    elif short_reasons:
-        reason = "; ".join(short_reasons)
-
-    return SignalReport(display_symbol, "WAIT", confidence, trend, None, None, None, reason)
+    return _quality_gate(strategies, bias, data, symbol, min_confidence)
