@@ -16,6 +16,7 @@ from bot.signal_engine import (
     _mean_reversion,
     _fallback_scoring,
     _quality_gate,
+    _crypto_momentum_surge,
     analyze_setup,
 )
 
@@ -164,6 +165,19 @@ class TestMeanReversion:
         data = compute_indicators(_ohcv_close(c))
         sig = _mean_reversion(data)
         assert sig.action == "HOLD"
+
+
+class TestCryptoMomentumSurge:
+    def test_non_crypto_symbol_returns_hold(self):
+        data = compute_indicators(_ohcv_close(list(range(1, 101))))
+        sig = _crypto_momentum_surge(data, "EUR_USD")
+        assert sig.action == "HOLD"
+
+    def test_crypto_symbol_runs(self):
+        data = compute_indicators(_ohcv_close(list(range(1, 101))))
+        sig = _crypto_momentum_surge(data, "BTC_USD")
+        assert sig.action in ("BUY", "SELL", "HOLD")
+        assert sig.name == "Crypto Momentum Surge"
 
 
 # ============================== FALLBACK SCORING ==============================

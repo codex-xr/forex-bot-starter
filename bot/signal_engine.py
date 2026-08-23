@@ -269,6 +269,71 @@ def _mean_reversion(data: pd.DataFrame) -> StrategySignal:
 
 
 # ---------------------------------------------------------------------------
+# Strategy 5 — Crypto Momentum Surge (Trend Breakout & Dynamic EMA Bounce)
+# ---------------------------------------------------------------------------
+
+CRYPTO_SYMBOLS = {"BTC_USD", "ETH_USD", "SOL_USD", "XRP_USD", "DOGE_USD", "ADA_USD"}
+
+
+def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
+    if symbol not in CRYPTO_SYMBOLS:
+        return StrategySignal("Crypto Momentum Surge", "HOLD", 0, "")
+
+    last = data.iloc[-1]
+    prev = data.iloc[-2]
+    close = float(last["close"])
+    open_p = float(last["open"])
+    body = abs(close - open_p)
+    total_range = float(last["high"] - last["low"])
+    last_rsi = float(last["rsi"]) if pd.notna(last["rsi"]) else 50
+    last_adx = float(last["adx"]) if pd.notna(last["adx"]) else 0
+
+    if last_adx < 20 or total_range == 0:
+        return StrategySignal("Crypto Momentum Surge", "HOLD", 0, "")
+
+    ref = data.iloc[-21:-1]
+    prior_high = ref["high"].max()
+    prior_low = ref["low"].min()
+
+    bull_trend = last["ema20"] > last["ema50"] and close > last["ema20"]
+    bear_trend = last["ema20"] < last["ema50"] and close < last["ema20"]
+
+    # Bullish Momentum Surge
+    if bull_trend and 52 <= last_rsi <= 75 and last["macd_hist"] > 0:
+        is_breakout = close > prior_high and close > open_p and body >= 0.5 * total_range
+        is_ema_bounce = prev["low"] <= last["ema20"] <= close and check_rejection(last, "buy")
+
+        if is_breakout:
+            return StrategySignal(
+                "Crypto Momentum Surge", "BUY", 90,
+                f"Range breakout ({close:.4f} > {prior_high:.4f}), RSI {last_rsi:.0f}, MACD accelerating",
+            )
+        if is_ema_bounce:
+            return StrategySignal(
+                "Crypto Momentum Surge", "BUY", 88,
+                f"EMA 20 dynamic support bounce, RSI {last_rsi:.0f}, strong trend continuation",
+            )
+
+    # Bearish Momentum Surge
+    if bear_trend and 25 <= last_rsi <= 48 and last["macd_hist"] < 0:
+        is_breakdown = close < prior_low and close < open_p and body >= 0.5 * total_range
+        is_ema_reject = prev["high"] >= last["ema20"] >= close and check_rejection(last, "sell")
+
+        if is_breakdown:
+            return StrategySignal(
+                "Crypto Momentum Surge", "SELL", 90,
+                f"Range breakdown ({close:.4f} < {prior_low:.4f}), RSI {last_rsi:.0f}, MACD expanding down",
+            )
+        if is_ema_reject:
+            return StrategySignal(
+                "Crypto Momentum Surge", "SELL", 88,
+                f"EMA 20 dynamic resistance rejection, RSI {last_rsi:.0f}, strong trend continuation",
+            )
+
+    return StrategySignal("Crypto Momentum Surge", "HOLD", 0, "")
+
+
+# ---------------------------------------------------------------------------
 # Fallback — 5-factor weighted checklist
 # ---------------------------------------------------------------------------
 
@@ -515,6 +580,7 @@ def analyze_setup(
         _london_breakout(data, session_key),
         _ema_pullback(data),
         _mean_reversion(data),
+        _crypto_momentum_surge(data, symbol),
     ]
 
     return _quality_gate(strategies, bias, data, symbol, min_confidence)
