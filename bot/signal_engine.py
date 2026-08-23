@@ -158,9 +158,9 @@ def htf_bias(data: pd.DataFrame) -> str:
 # ---------------------------------------------------------------------------
 
 def _sl_tp_mult(symbol: str) -> tuple[float, float]:
-    if symbol == "XAU_USD":
+    if symbol in ("XAU_USD", "US30"):
         return 2.5, 5.0
-    if symbol in ("BTC_USD", "ETH_USD"):
+    if symbol in ("BTC_USD", "ETH_USD", "SOL_USD", "XRP_USD", "DOGE_USD", "ADA_USD"):
         return 2.0, 4.0
     return 1.5, 3.0
 

@@ -5,6 +5,10 @@ from bot.telegram import send_telegram_message, telegram_request
 
 
 COMMANDS = {
+    "/f1": "f1",
+    "/f2": "f2",
+    "/c1": "c1",
+    "/crypto": "c1",
     "/tokyo": "tokyo",
     "/london": "london",
     "/newyork": "new_york",
@@ -13,14 +17,21 @@ COMMANDS = {
 }
 
 
-HELP_TEXT = """Forex Signal Bot
+HELP_TEXT = """Forex & Crypto Signal Bot
 
-Commands:
+⚡ Quick Signal Commands:
+/f1 - Forex Majors (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD)
+/f2 - Forex Crosses & Gold (NZDUSD, EURGBP, EURJPY, GBPJPY, Gold, US30)
+/c1 - Top 6 Cryptos (BTC, ETH, SOL, XRP, DOGE, ADA)
+
+🌍 Session Commands:
 /london - Scan London session
 /tokyo - Scan Tokyo session
 /newyork - Scan New York session
 /overlap - Scan London/New York overlap
 /scanall - Scan all market sessions
+
+ℹ️ Other:
 /status - Check bot status
 /help - Show commands
 """

@@ -13,6 +13,9 @@ class MarketSession:
 
 
 SESSIONS = {
+    "f1": MarketSession("Forex Batch 1", "Majors (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD)"),
+    "f2": MarketSession("Forex Batch 2", "Crosses & Commodities (NZDUSD, EURGBP, EURJPY, GBPJPY, Gold, US30)"),
+    "c1": MarketSession("Crypto Batch 1", "Top 6 Cryptos (BTC, ETH, SOL, XRP, DOGE, ADA)"),
     "tokyo": MarketSession("Tokyo Session", "JPY pairs, AUD, NZD"),
     "london": MarketSession("London Session", "EUR, GBP, gold, major forex pairs"),
     "new_york": MarketSession("New York Session", "USD pairs, gold, oil, indices"),
@@ -20,6 +23,30 @@ SESSIONS = {
 }
 
 SESSION_WATCHLISTS = {
+    "f1": [
+        "EUR_USD",
+        "GBP_USD",
+        "USD_JPY",
+        "USD_CHF",
+        "AUD_USD",
+        "USD_CAD",
+    ],
+    "f2": [
+        "NZD_USD",
+        "EUR_GBP",
+        "EUR_JPY",
+        "GBP_JPY",
+        "XAU_USD",
+        "US30",
+    ],
+    "c1": [
+        "BTC_USD",
+        "ETH_USD",
+        "SOL_USD",
+        "XRP_USD",
+        "DOGE_USD",
+        "ADA_USD",
+    ],
     "tokyo": [
         "USD_JPY",
         "GBP_JPY",
