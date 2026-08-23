@@ -35,27 +35,31 @@ def handle_message(message: dict) -> None:
 
     command = text.split()[0]
 
-    if command in {"/start", "/help"}:
-        send_telegram_message(HELP_TEXT, chat_id=chat_id)
-        return
+    try:
+        if command in {"/start", "/help"}:
+            send_telegram_message(HELP_TEXT, chat_id=chat_id)
+            return
 
-    if command == "/scanall":
-        send_telegram_message("Scanning all market sessions. One moment...", chat_id=chat_id)
-        message_text = build_all_sessions_message(min_confidence=60)
-        send_telegram_message(message_text, chat_id=chat_id)
-        return
+        if command == "/scanall":
+            send_telegram_message("Scanning all market sessions. One moment...", chat_id=chat_id)
+            message_text = build_all_sessions_message(min_confidence=60)
+            send_telegram_message(message_text, chat_id=chat_id)
+            return
 
-    if command == "/status":
-        send_telegram_message("Forex Signal Bot is online.", chat_id=chat_id)
-        return
+        if command == "/status":
+            send_telegram_message("Forex Signal Bot is online.", chat_id=chat_id)
+            return
 
-    if command in COMMANDS:
-        send_telegram_message("Scanning market. One moment...", chat_id=chat_id)
-        message_text = build_session_message(COMMANDS[command], min_confidence=60)
-        send_telegram_message(message_text, chat_id=chat_id)
-        return
+        if command in COMMANDS:
+            send_telegram_message("Scanning market. One moment...", chat_id=chat_id)
+            message_text = build_session_message(COMMANDS[command], min_confidence=60)
+            send_telegram_message(message_text, chat_id=chat_id)
+            return
 
-    send_telegram_message("Unknown command. Send /help to see available commands.", chat_id=chat_id)
+        send_telegram_message("Unknown command. Send /help to see available commands.", chat_id=chat_id)
+    except Exception as exc:
+        print(f"Error handling command '{command}' for chat {chat_id}: {exc}")
+        send_telegram_message(f"Error processing {command}: {exc}", chat_id=chat_id)
 
 
 def main() -> None:

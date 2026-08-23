@@ -3,6 +3,9 @@ SYMBOL_ALIASES = {
 }
 
 DISPLAY_NAMES = {
+    "EUR_USD": "EURUSD",
+    "GBP_USD": "GBPUSD",
+    "USD_JPY": "USDJPY",
     "USD_ZAR": "USDZAR",
     "GBP_NZD": "GBPNZD",
     "GBP_JPY": "GBPJPY",

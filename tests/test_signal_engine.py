@@ -206,6 +206,32 @@ class TestQualityGate:
         report = _quality_gate(strategies, "bearish", data, "EUR_USD", 60)
         assert report.action in ("BUY", "SELL", "WAIT")
 
+    def test_single_active_with_htf_alignment_qualifies(self):
+        data = compute_indicators(_ohcv_close(list(range(1, 101))))
+        strategies = [
+            StrategySignal("SMC Sweep", "BUY", 88, "Sweep below support"),
+            StrategySignal("Breakout", "HOLD", 0, ""),
+            StrategySignal("Pullback", "HOLD", 0, ""),
+            StrategySignal("MR", "HOLD", 0, ""),
+        ]
+        report = _quality_gate(strategies, "bullish", data, "EUR_USD", 60)
+        assert report.action == "BUY"
+        assert report.confidence == 88
+        assert "Sweep below support" in report.reason
+
+    def test_two_agreeing_strategies_qualify(self):
+        data = compute_indicators(_ohcv_close([1.0] * 100))
+        strategies = [
+            StrategySignal("Strategy A", "BUY", 80, "Reason A"),
+            StrategySignal("Strategy B", "BUY", 84, "Reason B"),
+            StrategySignal("Strategy C", "HOLD", 0, ""),
+            StrategySignal("Strategy D", "HOLD", 0, ""),
+        ]
+        report = _quality_gate(strategies, "neutral", data, "EUR_USD", 60)
+        assert report.action == "BUY"
+        assert report.confidence == 82
+        assert "Reason A | Reason B" in report.reason
+
 
 # ============================== INTEGRATION ==============================
 

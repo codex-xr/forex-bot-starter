@@ -30,11 +30,11 @@ def run_backtest(data_path: Path) -> None:
         broker.place_order(order)
 
         send_telegram_message(
-            f"Forex Bot Signal\\n"
-            f"Pair: {order.symbol}\\n"
-            f"Signal: {order.side.upper()}\\n"
-            f"Units: {order.units}\\n"
-            f"Price: {order.price:.5f}\\n"
+            f"Forex Bot Signal\n"
+            f"Pair: {order.symbol}\n"
+            f"Signal: {order.side.upper()}\n"
+            f"Units: {order.units}\n"
+            f"Price: {order.price:.5f}\n"
             f"Mode: Backtest"
         )
 

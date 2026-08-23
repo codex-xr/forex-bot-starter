@@ -470,7 +470,8 @@ def _quality_gate(
         same = buys if direction == "BUY" else sells
 
         # High confidence with HTF alignment
-        if cand.confidence >= 85 and bias == direction.lower():
+        expected_bias = "bullish" if direction == "BUY" else "bearish"
+        if cand.confidence >= 85 and bias == expected_bias:
             return _make_report(symbol, direction, cand.confidence, trend, close, atr_val, cand.reason)
 
         # Two different strategies agreeing

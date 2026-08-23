@@ -14,7 +14,12 @@ def telegram_request(method: str, payload: dict | None = None) -> dict:
     response = requests.post(url, json=payload or {}, timeout=30)
 
     if not response.ok:
-        raise RuntimeError(f"Telegram API error: HTTP {response.status_code}")
+        try:
+            err_data = response.json()
+            description = err_data.get("description", f"HTTP {response.status_code}")
+        except Exception:
+            description = f"HTTP {response.status_code}"
+        raise RuntimeError(f"Telegram API error ({description})")
 
     return response.json()
 

@@ -20,6 +20,13 @@ SESSIONS = {
 }
 
 SESSION_WATCHLISTS = {
+    "tokyo": [
+        "USD_JPY",
+        "GBP_JPY",
+        "EUR_USD",
+        "BTC_USD",
+        "ETH_USD",
+    ],
     "london": [
         "EUR_USD",
         "GBP_USD",
@@ -34,10 +41,21 @@ SESSION_WATCHLISTS = {
         "GBP_JPY",
         "GBP_NZD",
         "USD_ZAR",
+        "EUR_USD",
+        "XAU_USD",
+    ],
+    "overlap": [
+        "EUR_USD",
+        "GBP_USD",
+        "USD_JPY",
+        "XAU_USD",
+        "US30",
     ],
 }
 
-ALL_WATCHLIST = SESSION_WATCHLISTS["london"] + SESSION_WATCHLISTS["new_york"]
+ALL_WATCHLIST = list(dict.fromkeys(
+    sym for watchlist in SESSION_WATCHLISTS.values() for sym in watchlist
+))
 
 
 def scan_symbol(symbol: str, min_confidence: int, session_key: str | None = None) -> str:
