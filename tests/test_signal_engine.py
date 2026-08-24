@@ -283,8 +283,8 @@ class TestAnalyzeSetup:
 
     def test_crypto_sl_tp_multipliers(self):
         from bot.signal_engine import _sl_tp_mult
-        assert _sl_tp_mult("BTC_USD") == (2.0, 4.0)
-        assert _sl_tp_mult("SOL_USD") == (2.0, 4.0)
-        assert _sl_tp_mult("DOGE_USD") == (2.0, 4.0)
-        assert _sl_tp_mult("XAU_USD") == (2.5, 5.0)
+        assert _sl_tp_mult("BTC_USD") == (2.5, 3.5)
+        assert _sl_tp_mult("SOL_USD") == (2.5, 3.5)
+        assert _sl_tp_mult("DOGE_USD") == (2.5, 3.5)
+        assert _sl_tp_mult("XAU_USD") == (2.0, 4.0)
         assert _sl_tp_mult("EUR_USD") == (1.5, 3.0)
