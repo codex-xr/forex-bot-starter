@@ -3,7 +3,7 @@ import requests
 from dotenv import load_dotenv
 
 
-def telegram_request(method: str, payload: dict | None = None) -> dict:
+def telegram_request(method: str, payload: dict | None = None, timeout: int = 35) -> dict:
     load_dotenv()
 
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -11,7 +11,7 @@ def telegram_request(method: str, payload: dict | None = None) -> dict:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing")
 
     url = f"https://api.telegram.org/bot{token}/{method}"
-    response = requests.post(url, json=payload or {}, timeout=30)
+    response = requests.post(url, json=payload or {}, timeout=timeout)
 
     if not response.ok:
         try:

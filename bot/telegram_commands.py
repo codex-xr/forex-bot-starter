@@ -45,6 +45,7 @@ def handle_message(message: dict) -> None:
         return
 
     command = text.split()[0]
+    print(f"Received command '{command}' from chat {chat_id}")
 
     try:
         if command in {"/start", "/help"}:
@@ -58,7 +59,7 @@ def handle_message(message: dict) -> None:
             return
 
         if command == "/status":
-            send_telegram_message("Forex Signal Bot is online.", chat_id=chat_id)
+            send_telegram_message("Forex & Crypto Signal Bot is online and active.", chat_id=chat_id)
             return
 
         if command in COMMANDS:
@@ -74,16 +75,16 @@ def handle_message(message: dict) -> None:
 
 
 def main() -> None:
-    print("Telegram command bot is running...")
+    print("Telegram command bot is active and listening for messages...")
     offset = None
 
     while True:
-        payload = {"timeout": 30}
+        payload = {"timeout": 10}
         if offset is not None:
             payload["offset"] = offset
 
         try:
-            updates = telegram_request("getUpdates", payload).get("result", [])
+            updates = telegram_request("getUpdates", payload, timeout=25).get("result", [])
 
             for update in updates:
                 offset = update["update_id"] + 1
@@ -91,8 +92,8 @@ def main() -> None:
                     handle_message(update["message"])
 
         except Exception as exc:
-            print(f"Command bot error: {exc}")
-            time.sleep(5)
+            print(f"Polling error: {exc}")
+            time.sleep(3)
 
 
 if __name__ == "__main__":
