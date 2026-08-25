@@ -24,7 +24,7 @@ def telegram_request(method: str, payload: dict | None = None, timeout: int = 35
     return response.json()
 
 
-def send_telegram_message(message: str, chat_id: str | int | None = None) -> None:
+def send_telegram_message(message: str, chat_id: str | int | None = None, parse_mode: str = "HTML") -> None:
     load_dotenv()
 
     target_chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
@@ -32,10 +32,11 @@ def send_telegram_message(message: str, chat_id: str | int | None = None) -> Non
         print("Telegram chat is not configured. Skipping message.")
         return
 
-    telegram_request(
-        "sendMessage",
-        {
-            "chat_id": target_chat_id,
-            "text": message,
-        },
-    )
+    payload = {
+        "chat_id": target_chat_id,
+        "text": message,
+    }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+
+    telegram_request("sendMessage", payload)

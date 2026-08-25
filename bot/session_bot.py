@@ -105,10 +105,11 @@ def build_session_message(session_key: str, min_confidence: int) -> str:
     watchlist = SESSION_WATCHLISTS.get(session_key, ALL_WATCHLIST)
 
     lines = [
-        f"{session.name} Open",
-        f"Focus: {session.focus}",
+        f"📊 <b>{session.name}</b>",
+        f"<i>Focus: {session.focus}</i>",
         "",
-        "Market scan:",
+        "<b>Market Scan:</b>",
+        "",
     ]
 
     for symbol in watchlist:
@@ -126,15 +127,15 @@ def run_session(session_key: str, min_confidence: int) -> None:
 
 def build_all_sessions_message(min_confidence: int) -> str:
     lines = [
-        "All Market Sessions Signal Scan",
+        "📊 <b>All Market Sessions Signal Scan</b>",
         "",
-        "Sessions:",
+        "<b>Sessions:</b>",
     ]
 
     for session in SESSIONS.values():
-        lines.append(f"- {session.name}: {session.focus}")
+        lines.append(f"• <b>{session.name}</b>: <i>{session.focus}</i>")
 
-    lines.extend(["", "Market scan:"])
+    lines.extend(["", "<b>Market Scan:</b>", ""])
 
     for symbol in ALL_WATCHLIST:
         lines.append(scan_symbol(symbol, min_confidence, session_key=None))

@@ -1,8 +1,21 @@
 from dataclasses import dataclass
+import html
 import numpy as np
 import pandas as pd
 
 from bot.symbols import DISPLAY_NAMES
+
+
+def _fmt_price(val: float | None) -> str:
+    if val is None:
+        return "N/A"
+    if abs(val) >= 1000:
+        return f"<code>{val:.2f}</code>"
+    if abs(val) >= 10:
+        return f"<code>{val:.3f}</code>"
+    if abs(val) >= 0.1:
+        return f"<code>{val:.5f}</code>"
+    return f"<code>{val:.6f}</code>"
 
 
 @dataclass(frozen=True)
@@ -17,22 +30,24 @@ class SignalReport:
     reason: str
 
     def to_message(self) -> str:
+        safe_reason = html.escape(self.reason)
+        safe_trend = html.escape(self.trend)
         if self.action == "WAIT":
             return (
-                f"{self.symbol}: WAIT\n"
-                f"Trend: {self.trend}\n"
-                f"Confidence: {self.confidence}%\n"
-                f"Reason: {self.reason}"
+                f"<b>{self.symbol}</b>: <code>WAIT</code>\n"
+                f"Trend: {safe_trend}\n"
+                f"Confidence: <code>{self.confidence}%</code>\n"
+                f"Reason: {safe_reason}"
             )
         return (
-            f"{self.symbol}: {self.action} setup\n"
-            f"Trend: {self.trend}\n"
-            f"Confidence: {self.confidence}%\n"
-            f"Entry: {self.entry:.5f}\n"
-            f"Stop Loss: {self.stop_loss:.5f}\n"
-            f"Take Profit: {self.take_profit:.5f}\n"
-            f"Risk/Reward: about 1:2\n"
-            f"Reason: {self.reason}"
+            f"<b>{self.symbol}</b>: <b>{self.action} SETUP</b>\n"
+            f"Trend: {safe_trend}\n"
+            f"Confidence: <code>{self.confidence}%</code>\n"
+            f"Entry: {_fmt_price(self.entry)}\n"
+            f"Stop Loss: {_fmt_price(self.stop_loss)}\n"
+            f"Take Profit: {_fmt_price(self.take_profit)}\n"
+            f"Risk/Reward: <code>1:2</code>\n"
+            f"Reason: {safe_reason}"
         )
 
 
