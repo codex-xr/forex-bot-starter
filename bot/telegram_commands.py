@@ -4,7 +4,7 @@ import time
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from bot.session_bot import build_all_sessions_message, build_session_message
+from bot.session_bot import build_session_message
 from bot.telegram import send_telegram_message, telegram_request
 
 
@@ -22,11 +22,6 @@ COMMANDS = {
     "/meme1": "m1",
     "/meme2": "m2",
     "/memes": "m1",
-    "/tokyo": "tokyo",
-    "/london": "london",
-    "/newyork": "new_york",
-    "/new_york": "new_york",
-    "/overlap": "overlap",
 }
 
 
@@ -43,9 +38,6 @@ HELP_TEXT = """🔥 <b>Forex, Crypto & Memecoin Signal Bot</b>
 🐶🐸 <b>High-Volatility Memecoins:</b>
 • <code>/m1</code> — Top Memes (WIF, PEPE, SHIB, BONK, FLOKI, BRETT, ANSEM)
 • <code>/m2</code> — Trending & Narrative Memes (TRUMP, BOME, PENGU, MOG, PEOPLE, ELON)
-
-🌍 <b>Sessions:</b>
-• <code>/london</code>, <code>/tokyo</code>, <code>/newyork</code>, <code>/overlap</code>, <code>/scanall</code>
 
 ℹ️ <b>Info:</b>
 • <code>/status</code> — Bot Health & Status
@@ -66,12 +58,6 @@ def handle_message(message: dict) -> None:
     try:
         if command in {"/start", "/help"}:
             send_telegram_message(HELP_TEXT, chat_id=chat_id)
-            return
-
-        if command == "/scanall":
-            send_telegram_message("Scanning all market sessions. One moment...", chat_id=chat_id)
-            message_text = build_all_sessions_message(min_confidence=60)
-            send_telegram_message(message_text, chat_id=chat_id)
             return
 
         if command == "/status":

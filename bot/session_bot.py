@@ -24,10 +24,6 @@ SESSIONS = {
     "c2": MarketSession("High-Momentum Altcoins (/c2)", "BNB, AVAX, LINK, SUI, NEAR, LTC"),
     "m1": MarketSession("Top Memecoins (/m1)", "WIF, PEPE, SHIB, BONK, FLOKI, BRETT, ANSEM"),
     "m2": MarketSession("Trending & Narrative Memes (/m2)", "TRUMP, BOME, PENGU, MOG, PEOPLE, ELON"),
-    "tokyo": MarketSession("Tokyo Session", "JPY pairs, AUD, NZD"),
-    "london": MarketSession("London Session", "EUR, GBP, gold, major forex pairs"),
-    "new_york": MarketSession("New York Session", "USD pairs, gold, oil, indices"),
-    "overlap": MarketSession("London/New York Overlap", "Highest liquidity window"),
 }
 
 SESSION_WATCHLISTS = {
@@ -80,37 +76,6 @@ SESSION_WATCHLISTS = {
         "PEOPLE_USD",
         "ELON_USD",
     ],
-    "tokyo": [
-        "USD_JPY",
-        "GBP_JPY",
-        "EUR_USD",
-        "BTC_USD",
-        "ETH_USD",
-    ],
-    "london": [
-        "EUR_USD",
-        "GBP_USD",
-        "USD_JPY",
-        "XAU_USD",
-        "BTC_USD",
-        "ETH_USD",
-    ],
-    "new_york": [
-        "US30",
-        "USD_TRY",
-        "GBP_JPY",
-        "GBP_NZD",
-        "USD_ZAR",
-        "EUR_USD",
-        "XAU_USD",
-    ],
-    "overlap": [
-        "EUR_USD",
-        "GBP_USD",
-        "USD_JPY",
-        "XAU_USD",
-        "US30",
-    ],
 }
 
 ALL_WATCHLIST = list(dict.fromkeys(
@@ -158,25 +123,6 @@ def run_session(session_key: str, min_confidence: int) -> None:
     message = build_session_message(session_key, min_confidence)
     print(message)
     send_telegram_message(message)
-
-
-def build_all_sessions_message(min_confidence: int) -> str:
-    lines = [
-        "📊 <b>All Market Sessions Signal Scan</b>",
-        "",
-        "<b>Sessions:</b>",
-    ]
-
-    for session in SESSIONS.values():
-        lines.append(f"• <b>{session.name}</b>: <i>{session.focus}</i>")
-
-    lines.extend(["", "<b>Market Scan:</b>", ""])
-
-    for symbol in ALL_WATCHLIST:
-        lines.append(scan_symbol(symbol, min_confidence, session_key=None))
-        lines.append("")
-
-    return "\n".join(lines).strip()
 
 
 def main() -> None:
