@@ -1,4 +1,8 @@
+import sys
 import time
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from bot.session_bot import build_all_sessions_message, build_session_message
 from bot.telegram import send_telegram_message, telegram_request
@@ -8,7 +12,16 @@ COMMANDS = {
     "/f1": "f1",
     "/f2": "f2",
     "/c1": "c1",
+    "/c2": "c2",
     "/crypto": "c1",
+    "/crypto1": "c1",
+    "/crypto2": "c2",
+    "/m1": "m1",
+    "/m2": "m2",
+    "/meme": "m1",
+    "/meme1": "m1",
+    "/meme2": "m2",
+    "/memes": "m1",
     "/tokyo": "tokyo",
     "/london": "london",
     "/newyork": "new_york",
@@ -17,23 +30,26 @@ COMMANDS = {
 }
 
 
-HELP_TEXT = """Forex & Crypto Signal Bot
+HELP_TEXT = """🔥 <b>Forex, Crypto & Memecoin Signal Bot</b>
 
-⚡ Quick Signal Commands:
-/f1 - Forex Majors (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD)
-/f2 - Forex Crosses & Gold (NZDUSD, EURGBP, EURJPY, GBPJPY, Gold, US30)
-/c1 - Top 6 Cryptos (BTC, ETH, SOL, XRP, DOGE, ADA)
+📈 <b>Forex & Commodities:</b>
+• <code>/f1</code> — Forex Majors (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD)
+• <code>/f2</code> — Crosses & Gold (NZDUSD, EURGBP, EURJPY, GBPJPY, Gold, US30)
 
-🌍 Session Commands:
-/london - Scan London session
-/tokyo - Scan Tokyo session
-/newyork - Scan New York session
-/overlap - Scan London/New York overlap
-/scanall - Scan all market sessions
+🚀 <b>Crypto Markets:</b>
+• <code>/c1</code> — Major Cryptos (BTC, ETH, SOL, XRP, DOGE, ADA)
+• <code>/c2</code> — High-Momentum Altcoins (BNB, AVAX, LINK, SUI, NEAR, LTC)
 
-ℹ️ Other:
-/status - Check bot status
-/help - Show commands
+🐶🐸 <b>High-Volatility Memecoins:</b>
+• <code>/m1</code> — Top Memes (WIF, PEPE, SHIB, BONK, FLOKI, BRETT, ANSEM)
+• <code>/m2</code> — Trending & Narrative Memes (TRUMP, BOME, PENGU, MOG, PEOPLE, ELON)
+
+🌍 <b>Sessions:</b>
+• <code>/london</code>, <code>/tokyo</code>, <code>/newyork</code>, <code>/overlap</code>, <code>/scanall</code>
+
+ℹ️ <b>Info:</b>
+• <code>/status</code> — Bot Health & Status
+• <code>/help</code> — Show this menu
 """
 
 

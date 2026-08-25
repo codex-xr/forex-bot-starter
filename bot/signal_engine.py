@@ -15,7 +15,9 @@ def _fmt_price(val: float | None) -> str:
         return f"<code>{val:.3f}</code>"
     if abs(val) >= 0.1:
         return f"<code>{val:.5f}</code>"
-    return f"<code>{val:.6f}</code>"
+    if abs(val) >= 0.0001:
+        return f"<code>{val:.8f}</code>"
+    return f"<code>{val:.10f}</code>"
 
 
 @dataclass(frozen=True)
@@ -175,7 +177,7 @@ def htf_bias(data: pd.DataFrame) -> str:
 def _sl_tp_mult(symbol: str) -> tuple[float, float]:
     if symbol in ("XAU_USD", "US30"):
         return 2.0, 4.0
-    if symbol in ("BTC_USD", "ETH_USD", "SOL_USD", "XRP_USD", "DOGE_USD", "ADA_USD"):
+    if symbol in CRYPTO_SYMBOLS:
         return 2.5, 3.5
     return 1.5, 3.0
 
@@ -307,7 +309,16 @@ def _mean_reversion(data: pd.DataFrame) -> StrategySignal:
 # Strategy 5 — Crypto Momentum Surge (Trend Breakout & Dynamic EMA Bounce)
 # ---------------------------------------------------------------------------
 
-CRYPTO_SYMBOLS = {"BTC_USD", "ETH_USD", "SOL_USD", "XRP_USD", "DOGE_USD", "ADA_USD"}
+CRYPTO_SYMBOLS = {
+    # Major Cryptos (/c1)
+    "BTC_USD", "ETH_USD", "SOL_USD", "XRP_USD", "DOGE_USD", "ADA_USD",
+    # High-Momentum Altcoins (/c2)
+    "BNB_USD", "AVAX_USD", "LINK_USD", "SUI_USD", "NEAR_USD", "LTC_USD",
+    # Top Memecoins (/m1)
+    "WIF_USD", "PEPE_USD", "SHIB_USD", "BONK_USD", "FLOKI_USD", "BRETT_USD", "ANSEM_USD",
+    # Trending & Narrative Memecoins (/m2)
+    "TRUMP_USD", "BOME_USD", "PENGU_USD", "MOG_USD", "PEOPLE_USD", "ELON_USD",
+}
 
 
 def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:

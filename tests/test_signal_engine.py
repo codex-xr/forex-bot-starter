@@ -271,6 +271,8 @@ class TestAnalyzeSetup:
         assert analyze_setup("SOL_USD", prices).symbol == "SOLUSD"
         assert analyze_setup("USD_CHF", prices).symbol == "USDCHF"
         assert analyze_setup("DOGE_USD", prices).symbol == "DOGEUSD"
+        assert analyze_setup("ANSEM_USD", prices).symbol == "ANSEM"
+        assert analyze_setup("WIF_USD", prices).symbol == "WIFUSD"
 
     def test_min_confidence_zero_allows_fallback(self):
         n = 100
@@ -286,5 +288,7 @@ class TestAnalyzeSetup:
         assert _sl_tp_mult("BTC_USD") == (2.5, 3.5)
         assert _sl_tp_mult("SOL_USD") == (2.5, 3.5)
         assert _sl_tp_mult("DOGE_USD") == (2.5, 3.5)
+        assert _sl_tp_mult("ANSEM_USD") == (2.5, 3.5)
+        assert _sl_tp_mult("WIF_USD") == (2.5, 3.5)
         assert _sl_tp_mult("XAU_USD") == (2.0, 4.0)
         assert _sl_tp_mult("EUR_USD") == (1.5, 3.0)

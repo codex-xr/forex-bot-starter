@@ -1,5 +1,10 @@
 import argparse
 from dataclasses import dataclass
+import sys
+import time
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from bot.market_data import fetch_live_candles
 from bot.signal_engine import analyze_setup
@@ -13,9 +18,12 @@ class MarketSession:
 
 
 SESSIONS = {
-    "f1": MarketSession("Forex Batch 1", "Majors (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD)"),
-    "f2": MarketSession("Forex Batch 2", "Crosses & Commodities (NZDUSD, EURGBP, EURJPY, GBPJPY, Gold, US30)"),
-    "c1": MarketSession("Crypto Batch 1", "Top 6 Cryptos (BTC, ETH, SOL, XRP, DOGE, ADA)"),
+    "f1": MarketSession("Forex Batch 1 (/f1)", "Majors (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD)"),
+    "f2": MarketSession("Forex Batch 2 (/f2)", "Crosses & Commodities (NZDUSD, EURGBP, EURJPY, GBPJPY, Gold, US30)"),
+    "c1": MarketSession("Major Cryptos (/c1)", "BTC, ETH, SOL, XRP, DOGE, ADA"),
+    "c2": MarketSession("High-Momentum Altcoins (/c2)", "BNB, AVAX, LINK, SUI, NEAR, LTC"),
+    "m1": MarketSession("Top Memecoins (/m1)", "WIF, PEPE, SHIB, BONK, FLOKI, BRETT, ANSEM"),
+    "m2": MarketSession("Trending & Narrative Memes (/m2)", "TRUMP, BOME, PENGU, MOG, PEOPLE, ELON"),
     "tokyo": MarketSession("Tokyo Session", "JPY pairs, AUD, NZD"),
     "london": MarketSession("London Session", "EUR, GBP, gold, major forex pairs"),
     "new_york": MarketSession("New York Session", "USD pairs, gold, oil, indices"),
@@ -46,6 +54,31 @@ SESSION_WATCHLISTS = {
         "XRP_USD",
         "DOGE_USD",
         "ADA_USD",
+    ],
+    "c2": [
+        "BNB_USD",
+        "AVAX_USD",
+        "LINK_USD",
+        "SUI_USD",
+        "NEAR_USD",
+        "LTC_USD",
+    ],
+    "m1": [
+        "WIF_USD",
+        "PEPE_USD",
+        "SHIB_USD",
+        "BONK_USD",
+        "FLOKI_USD",
+        "BRETT_USD",
+        "ANSEM_USD",
+    ],
+    "m2": [
+        "TRUMP_USD",
+        "BOME_USD",
+        "PENGU_USD",
+        "MOG_USD",
+        "PEOPLE_USD",
+        "ELON_USD",
     ],
     "tokyo": [
         "USD_JPY",
@@ -112,7 +145,9 @@ def build_session_message(session_key: str, min_confidence: int) -> str:
         "",
     ]
 
-    for symbol in watchlist:
+    for i, symbol in enumerate(watchlist):
+        if i > 0:
+            time.sleep(0.5)
         lines.append(scan_symbol(symbol, min_confidence, session_key=session_key))
         lines.append("")
 

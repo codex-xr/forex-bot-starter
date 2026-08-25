@@ -1,5 +1,16 @@
 SYMBOL_ALIASES = {
     "US30": "DIA",
+    "WIF_USD": "WIF/USDT",
+    "BONK_USD": "BONK/USDT",
+    "FLOKI_USD": "FLOKI/USDT",
+    "TRUMP_USD": "TRUMP/USDT",
+    "MOG_USD": "MOG/USDT",
+    "PENGU_USD": "PENGU/USDT",
+    "BOME_USD": "BOME/USDT",
+}
+
+DEX_POOLS = {
+    "ANSEM_USD": ("solana", "FnzKY6x7entQ1eR3D225dQyT7ybfka4PskBMQhb8L3CC"),
 }
 
 DISPLAY_NAMES = {
@@ -20,13 +31,35 @@ DISPLAY_NAMES = {
     # Commodities & Indices
     "XAU_USD": "XAUUSD",
     "US30": "US30",
-    # Cryptocurrencies
+    # Major Cryptos (/c1)
     "BTC_USD": "BTCUSD",
     "ETH_USD": "ETHUSD",
     "SOL_USD": "SOLUSD",
     "XRP_USD": "XRPUSD",
     "DOGE_USD": "DOGEUSD",
     "ADA_USD": "ADAUSD",
+    # High-Momentum Altcoins (/c2)
+    "BNB_USD": "BNBUSD",
+    "AVAX_USD": "AVAXUSD",
+    "LINK_USD": "LINKUSD",
+    "SUI_USD": "SUIUSD",
+    "NEAR_USD": "NEARUSD",
+    "LTC_USD": "LTCUSD",
+    # Top Memecoins (/m1)
+    "WIF_USD": "WIFUSD",
+    "PEPE_USD": "PEPEUSD",
+    "SHIB_USD": "SHIBUSD",
+    "BONK_USD": "BONKUSD",
+    "FLOKI_USD": "FLOKIUSD",
+    "BRETT_USD": "BRETTUSD",
+    "ANSEM_USD": "ANSEM",
+    # Trending & Narrative Memecoins (/m2)
+    "TRUMP_USD": "TRUMPUSD",
+    "BOME_USD": "BOMEUSD",
+    "PENGU_USD": "PENGUUSD",
+    "MOG_USD": "MOGUSD",
+    "PEOPLE_USD": "PEOPLEUSD",
+    "ELON_USD": "ELONUSD",
 }
 
 PIP_VALUES = {
@@ -43,13 +76,34 @@ PIP_VALUES = {
     "GBP_NZD": 0.0001,
     "USD_ZAR": 0.0001,
     "USD_TRY": 0.0001,
-    "XAU_USD": 0.1,     # 1 pip = $0.10 for Gold
-    "US30": 1.0,        # 1 point = $1.00 for Dow Jones Index
-    "BTC_USD": 1.0,     # 1 dollar = 1 point
+    "XAU_USD": 0.1,
+    "US30": 1.0,
+    # Cryptos
+    "BTC_USD": 1.0,
     "ETH_USD": 1.0,
     "SOL_USD": 0.01,
     "XRP_USD": 0.0001,
     "DOGE_USD": 0.0001,
     "ADA_USD": 0.0001,
+    "BNB_USD": 0.01,
+    "AVAX_USD": 0.01,
+    "LINK_USD": 0.01,
+    "SUI_USD": 0.001,
+    "NEAR_USD": 0.001,
+    "LTC_USD": 0.01,
+    # Memes
+    "WIF_USD": 0.0001,
+    "PEPE_USD": 0.00000001,
+    "SHIB_USD": 0.00000001,
+    "BONK_USD": 0.00000001,
+    "FLOKI_USD": 0.0000001,
+    "BRETT_USD": 0.0001,
+    "ANSEM_USD": 0.0001,
+    "TRUMP_USD": 0.01,
+    "BOME_USD": 0.00001,
+    "PENGU_USD": 0.00001,
+    "MOG_USD": 0.000000001,
+    "PEOPLE_USD": 0.00001,
+    "ELON_USD": 0.0000000001,
 }
 
