@@ -30,6 +30,10 @@ class SignalReport:
     stop_loss: float | None
     take_profit: float | None
     reason: str
+    tp1: float | None = None
+    tp2: float | None = None
+    tp3: float | None = None
+    catalyst: str | None = None
 
     def to_message(self) -> str:
         safe_reason = html.escape(self.reason)
@@ -41,14 +45,26 @@ class SignalReport:
                 f"Confidence: <code>{self.confidence}%</code>\n"
                 f"Reason: {safe_reason}"
             )
+
+        tp1_val = self.tp1 or self.take_profit
+        tp2_val = self.tp2 or self.take_profit
+        tp3_val = self.tp3 or self.take_profit
+
+        catalyst_line = ""
+        if self.catalyst:
+            safe_cat = html.escape(self.catalyst)
+            catalyst_line = f"📰 <b>News Catalyst:</b> <i>{safe_cat}</i>\n"
+
         return (
             f"<b>{self.symbol}</b>: <b>{self.action} SETUP</b>\n"
             f"Trend: {safe_trend}\n"
             f"Confidence: <code>{self.confidence}%</code>\n"
             f"Entry: {_fmt_price(self.entry)}\n"
             f"Stop Loss: {_fmt_price(self.stop_loss)}\n"
-            f"Take Profit: {_fmt_price(self.take_profit)}\n"
-            f"Risk/Reward: <code>1:2</code>\n"
+            f"TP 1 (1:1.5): {_fmt_price(tp1_val)} <i>(Close 50% & SL to BE)</i>\n"
+            f"TP 2 (1:2.5): {_fmt_price(tp2_val)} <i>(Close 30%)</i>\n"
+            f"TP 3 (1:4.0): {_fmt_price(tp3_val)} <i>(Runner 20%)</i>\n"
+            f"{catalyst_line}"
             f"Reason: {safe_reason}"
         )
 
@@ -381,6 +397,50 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
 
 
 # ---------------------------------------------------------------------------
+# Strategy 6 — News Catalyst Momentum (Breaking News, Trump & Macro Shifts)
+# ---------------------------------------------------------------------------
+
+def _news_catalyst_momentum(data: pd.DataFrame, symbol: str) -> StrategySignal:
+    try:
+        from bot.news_engine import get_asset_catalyst
+        cat_info = get_asset_catalyst(symbol)
+    except Exception:
+        cat_info = None
+
+    if not cat_info:
+        return StrategySignal("News Catalyst Momentum", "HOLD", 0, "")
+
+    sentiment_label, score, headline = cat_info
+    last = data.iloc[-1]
+    close = float(last["close"])
+    ema20 = float(last["ema20"])
+    rsi = float(last["rsi"]) if pd.notna(last["rsi"]) else 50
+    adx = float(last["adx"]) if pd.notna(last["adx"]) else 20
+
+    # Bullish News Catalyst + Technical Expansion
+    if sentiment_label == "Bullish" and close >= ema20 and rsi >= 48 and adx >= 18:
+        conf = min(95, 86 + abs(score) // 10)
+        return StrategySignal(
+            "News Catalyst Momentum",
+            "BUY",
+            conf,
+            f"Bullish news catalyst: '{headline[:60]}...' confirmed by EMA20 breakout (RSI {rsi:.0f}, ADX {adx:.0f})",
+        )
+
+    # Bearish News Catalyst + Technical Breakdown
+    if sentiment_label == "Bearish" and close <= ema20 and rsi <= 52 and adx >= 18:
+        conf = min(95, 86 + abs(score) // 10)
+        return StrategySignal(
+            "News Catalyst Momentum",
+            "SELL",
+            conf,
+            f"Bearish news catalyst: '{headline[:60]}...' confirmed by EMA20 breakdown (RSI {rsi:.0f}, ADX {adx:.0f})",
+        )
+
+    return StrategySignal("News Catalyst Momentum", "HOLD", 0, "")
+
+
+# ---------------------------------------------------------------------------
 # Fallback — 5-factor weighted checklist
 # ---------------------------------------------------------------------------
 
@@ -535,7 +595,8 @@ def _fallback_scoring(data: pd.DataFrame) -> tuple[str, int, str, int, str]:
 
 def _make_report(symbol: str, action: str, confidence: int, trend: str,
                  close: float, atr_val: float, reason: str,
-                 data: pd.DataFrame | None = None) -> SignalReport:
+                 data: pd.DataFrame | None = None,
+                 catalyst: str | None = None) -> SignalReport:
     sl_mult, tp_mult = _sl_tp_mult(symbol)
     if action == "BUY":
         if data is not None and len(data) >= 6:
@@ -544,7 +605,10 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
         else:
             sl = close - atr_val * sl_mult
         risk = max(close - sl, atr_val * 1.0)
-        tp = close + risk * (tp_mult / sl_mult)
+        tp1 = close + risk * 1.5
+        tp2 = close + risk * (tp_mult / sl_mult)
+        tp3 = close + risk * 4.0
+        tp = tp2
     elif action == "SELL":
         if data is not None and len(data) >= 6:
             swing_high = float(data.iloc[-6:-1]["high"].max())
@@ -552,9 +616,12 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
         else:
             sl = close + atr_val * sl_mult
         risk = max(sl - close, atr_val * 1.0)
-        tp = close - risk * (tp_mult / sl_mult)
+        tp1 = close - risk * 1.5
+        tp2 = close - risk * (tp_mult / sl_mult)
+        tp3 = close - risk * 4.0
+        tp = tp2
     else:
-        sl = tp = None
+        sl = tp = tp1 = tp2 = tp3 = None
 
     return SignalReport(
         symbol=DISPLAY_NAMES.get(symbol, symbol),
@@ -565,6 +632,10 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
         stop_loss=sl,
         take_profit=tp,
         reason=reason,
+        tp1=tp1,
+        tp2=tp2,
+        tp3=tp3,
+        catalyst=catalyst,
     )
 
 
@@ -591,16 +662,22 @@ def _quality_gate(
             continue
         same = buys if direction == "BUY" else sells
 
+        # Extract catalyst headline if news strategy triggered
+        catalyst = None
+        for s in same:
+            if s.name == "News Catalyst Momentum":
+                catalyst = s.reason.split("confirmed by")[0].strip()
+
         # High confidence with HTF alignment or standalone high-conviction setup
         expected_bias = "bullish" if direction == "BUY" else "bearish"
         if (cand.confidence >= 85 and bias == expected_bias) or cand.confidence >= 88:
-            return _make_report(symbol, direction, cand.confidence, trend, close, atr_val, cand.reason, data=data)
+            return _make_report(symbol, direction, cand.confidence, trend, close, atr_val, cand.reason, data=data, catalyst=catalyst)
 
         # Two different strategies agreeing
         if len(same) >= 2 and len({s.name for s in same}) >= 2:
             avg = sum(s.confidence for s in same) // len(same)
             reason = " | ".join(s.reason for s in same)
-            return _make_report(symbol, direction, avg, trend, close, atr_val, reason, data=data)
+            return _make_report(symbol, direction, avg, trend, close, atr_val, reason, data=data, catalyst=catalyst)
 
     # Fallback to scoring (Forex only - Crypto requires dedicated strategy confluence)
     if symbol not in CRYPTO_SYMBOLS:
@@ -639,6 +716,7 @@ def analyze_setup(
         _ema_pullback(data),
         _mean_reversion(data),
         _crypto_momentum_surge(data, symbol),
+        _news_catalyst_momentum(data, symbol),
     ]
 
     return _quality_gate(strategies, bias, data, symbol, min_confidence)

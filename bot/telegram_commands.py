@@ -5,6 +5,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from bot.autopilot import autopilot
+from bot.news_engine import format_news_summary
 from bot.session_bot import build_session_message
 from bot.telegram import send_telegram_message, telegram_request
 
@@ -32,6 +33,9 @@ HELP_TEXT = """🔥 <b>Forex, Crypto & Memecoin Signal Bot</b>
 • <code>/autopilot</code> — View Auto-Pilot status & recent hits
 • <code>/autopilot on</code> — Activate 24/7 background signal hunting
 • <code>/autopilot off</code> — Pause background monitoring
+
+📰 <b>Breaking News & Catalysts:</b>
+• <code>/news</code> — Real-time Crypto, Trump & Macro Sentiment Monitor
 
 📈 <b>Manual Forex & Commodities Scans:</b>
 • <code>/f1</code> — Forex Majors (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD)
@@ -68,6 +72,12 @@ def handle_message(message: dict) -> None:
     try:
         if command in {"/start", "/help"}:
             send_telegram_message(HELP_TEXT, chat_id=chat_id)
+            return
+
+        if command in {"/news", "/catalyst", "/catalysts"}:
+            send_telegram_message("Fetching latest breaking catalysts. One moment...", chat_id=chat_id)
+            news_text = format_news_summary(limit=5)
+            send_telegram_message(news_text, chat_id=chat_id)
             return
 
         if command in {"/autopilot", "/autopilot_status", "/autopilot_on", "/autopilot_off"}:
