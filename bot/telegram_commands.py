@@ -85,7 +85,7 @@ def handle_message(message: dict) -> None:
                 autopilot.resume()
                 send_telegram_message(
                     "🟢 <b>Auto-Pilot Activated!</b>\n\n"
-                    "Hunting 24/7 for single-pair trade setups ($\ge 80\%$ confidence). "
+                    "Hunting 24/7 for single-pair trade setups (65% minimum confidence). "
                     "When a setup triggers, you'll receive a direct single-trade alert.",
                     chat_id=chat_id,
                 )
@@ -106,7 +106,7 @@ def handle_message(message: dict) -> None:
             send_telegram_message(
                 f"✅ <b>Bot Online & Active</b>\n\n"
                 f"• <b>Commands:</b> <code>/f1</code>, <code>/f2</code>, <code>/c1</code>, <code>/c2</code>, <code>/m1</code>, <code>/m2</code>\n"
-                f"• <b>Auto-Pilot:</b> {auto_state}\n"
+                f"• <b>Auto-Pilot:</b> {auto_state} (65% Gate)\n"
                 f"• <b>DEX Streamer:</b> Solana ($ANSEM) connected",
                 chat_id=chat_id,
             )
@@ -114,7 +114,7 @@ def handle_message(message: dict) -> None:
 
         if command in COMMANDS:
             send_telegram_message("Scanning market. One moment...", chat_id=chat_id)
-            message_text = build_session_message(COMMANDS[command], min_confidence=60)
+            message_text = build_session_message(COMMANDS[command], min_confidence=65)
             send_telegram_message(message_text, chat_id=chat_id)
             return
 

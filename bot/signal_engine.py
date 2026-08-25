@@ -55,10 +55,16 @@ class SignalReport:
             safe_cat = html.escape(self.catalyst)
             catalyst_line = f"📰 <b>News Catalyst:</b> <i>{safe_cat}</i>\n"
 
+        action_guide = (
+            f"⚡ <b>Action:</b> Instant Market <b>{self.action}</b> (or <b>{self.action} STOP</b> at {_fmt_price(self.entry)})\n"
+            if self.entry is not None else ""
+        )
+
         return (
             f"<b>{self.symbol}</b>: <b>{self.action} SETUP</b>\n"
             f"Trend: {safe_trend}\n"
             f"Confidence: <code>{self.confidence}%</code>\n"
+            f"{action_guide}"
             f"Entry: {_fmt_price(self.entry)}\n"
             f"Stop Loss: {_fmt_price(self.stop_loss)}\n"
             f"TP 1 (1:1.5): {_fmt_price(tp1_val)} <i>(Close 50% & SL to BE)</i>\n"
@@ -277,7 +283,7 @@ def _london_breakout(data: pd.DataFrame, session_key: str | None, symbol: str = 
 
 
 # ---------------------------------------------------------------------------
-# Strategy 3 — EMA Ribbon Pullback (trending, ADX >= 22)
+# Strategy 3 — EMA Ribbon Pullback (trending, ADX >= 18)
 # ---------------------------------------------------------------------------
 
 def _ema_pullback(data: pd.DataFrame) -> StrategySignal:
@@ -286,18 +292,19 @@ def _ema_pullback(data: pd.DataFrame) -> StrategySignal:
     close = float(last["close"])
 
     last_adx = float(last["adx"]) if pd.notna(last["adx"]) else -1
-    if last_adx < 22:
+    if last_adx < 18:
         return StrategySignal("EMA Pullback", "HOLD", 0, "")
 
-    bull = last["ema20"] > last["ema50"] > last["ema100"] > last["ema200"]
-    bear = last["ema20"] < last["ema50"] < last["ema100"] < last["ema200"]
+    bull = last["ema20"] > last["ema50"]
+    bear = last["ema20"] < last["ema50"]
 
-    if bull and prev["low"] <= last["ema50"] <= close and check_rejection(last, "buy") and last["macd_hist"] > 0:
-        return StrategySignal("EMA Pullback", "BUY", 82,
-                              "Pullback to EMA 50 in bullish trend, MACD confirming")
-    if bear and prev["high"] >= last["ema50"] >= close and check_rejection(last, "sell") and last["macd_hist"] < 0:
-        return StrategySignal("EMA Pullback", "SELL", 82,
-                              "Pullback to EMA 50 in bearish trend, MACD confirming")
+    # Pullback into dynamic EMA 20/50 zone in bullish trend
+    if bull and (prev["low"] <= last["ema20"] * 1.003 or prev["low"] <= last["ema50"]) and close >= last["ema20"] * 0.998 and (check_rejection(last, "buy") or close > last["open"]):
+        return StrategySignal("EMA Pullback", "BUY", 80,
+                              "Pullback to EMA zone in bullish trend, dynamic bounce confirming")
+    if bear and (prev["high"] >= last["ema20"] * 0.997 or prev["high"] >= last["ema50"]) and close <= last["ema20"] * 1.002 and (check_rejection(last, "sell") or close < last["open"]):
+        return StrategySignal("EMA Pullback", "SELL", 80,
+                              "Pullback to EMA zone in bearish trend, dynamic bounce confirming")
     return StrategySignal("EMA Pullback", "HOLD", 0, "")
 
 
@@ -312,11 +319,11 @@ def _mean_reversion(data: pd.DataFrame) -> StrategySignal:
     if last_adx >= 22:
         return StrategySignal("Mean Reversion", "HOLD", 0, "")
 
-    if last["low"] <= last["lower_band"] and last["rsi"] <= 35 and check_rejection(last, "buy"):
-        return StrategySignal("Mean Reversion", "BUY", 80,
+    if last["low"] <= last["lower_band"] and last["rsi"] <= 38 and check_rejection(last, "buy"):
+        return StrategySignal("Mean Reversion", "BUY", 78,
                               f"Lower BB touch ({last['lower_band']:.2f}), RSI {last['rsi']:.0f}, bullish rejection")
-    if last["high"] >= last["upper_band"] and last["rsi"] >= 65 and check_rejection(last, "sell"):
-        return StrategySignal("Mean Reversion", "SELL", 80,
+    if last["high"] >= last["upper_band"] and last["rsi"] >= 62 and check_rejection(last, "sell"):
+        return StrategySignal("Mean Reversion", "SELL", 78,
                               f"Upper BB touch ({last['upper_band']:.2f}), RSI {last['rsi']:.0f}, bearish rejection")
     return StrategySignal("Mean Reversion", "HOLD", 0, "")
 
@@ -350,21 +357,21 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
     last_rsi = float(last["rsi"]) if pd.notna(last["rsi"]) else 50
     last_adx = float(last["adx"]) if pd.notna(last["adx"]) else 0
 
-    if last_adx < 24 or total_range == 0:
+    if last_adx < 18 or total_range == 0:
         return StrategySignal("Crypto Momentum Surge", "HOLD", 0, "")
 
     ref = data.iloc[-21:-1]
     prior_high = ref["high"].max()
     prior_low = ref["low"].min()
 
-    # EMA Trend & Alignment (EMA20 > EMA50 > EMA100 for strong trend)
-    bull_trend = last["ema20"] > last["ema50"] and close > last["ema20"]
-    bear_trend = last["ema20"] < last["ema50"] and close < last["ema20"]
+    # EMA Trend & Alignment (EMA20 > EMA50 for active trend)
+    bull_trend = last["ema20"] > last["ema50"] and close > last["ema20"] * 0.998
+    bear_trend = last["ema20"] < last["ema50"] and close < last["ema20"] * 1.002
 
     # Bullish Momentum Surge
-    if bull_trend and 54 <= last_rsi <= 72 and last["macd_hist"] > 0:
-        is_breakout = close > prior_high and close > open_p and body >= 0.55 * total_range
-        is_ema_bounce = prev["low"] <= last["ema20"] <= close and check_rejection(last, "buy")
+    if bull_trend and 48 <= last_rsi <= 75 and last["macd_hist"] > 0:
+        is_breakout = close > prior_high and close > open_p and body >= 0.40 * total_range
+        is_ema_bounce = prev["low"] <= last["ema20"] * 1.003 and close >= last["ema20"]
 
         if is_breakout:
             return StrategySignal(
@@ -373,14 +380,14 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
             )
         if is_ema_bounce:
             return StrategySignal(
-                "Crypto Momentum Surge", "BUY", 88,
+                "Crypto Momentum Surge", "BUY", 85,
                 f"EMA 20 dynamic support bounce, RSI {last_rsi:.0f}, strong trend continuation",
             )
 
     # Bearish Momentum Surge
-    if bear_trend and 28 <= last_rsi <= 46 and last["macd_hist"] < 0:
-        is_breakdown = close < prior_low and close < open_p and body >= 0.55 * total_range
-        is_ema_reject = prev["high"] >= last["ema20"] >= close and check_rejection(last, "sell")
+    if bear_trend and 25 <= last_rsi <= 52 and last["macd_hist"] < 0:
+        is_breakdown = close < prior_low and close < open_p and body >= 0.40 * total_range
+        is_ema_reject = prev["high"] >= last["ema20"] * 0.997 and close <= last["ema20"]
 
         if is_breakdown:
             return StrategySignal(
@@ -389,7 +396,7 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
             )
         if is_ema_reject:
             return StrategySignal(
-                "Crypto Momentum Surge", "SELL", 88,
+                "Crypto Momentum Surge", "SELL", 85,
                 f"EMA 20 dynamic resistance rejection, RSI {last_rsi:.0f}, strong trend continuation",
             )
 
@@ -644,7 +651,7 @@ def _quality_gate(
     bias: str,
     data: pd.DataFrame,
     symbol: str,
-    min_confidence: int,
+    min_confidence: int = 65,
 ) -> SignalReport:
     last = data.iloc[-1]
     close = float(last["close"])
@@ -657,6 +664,8 @@ def _quality_gate(
     best_buy = max(buys, key=lambda s: s.confidence) if buys else None
     best_sell = max(sells, key=lambda s: s.confidence) if sells else None
 
+    gate_threshold = min_confidence if (min_confidence is not None and min_confidence > 0) else 65
+
     for cand, direction in [(best_buy, "BUY"), (best_sell, "SELL")]:
         if cand is None:
             continue
@@ -668,24 +677,22 @@ def _quality_gate(
             if s.name == "News Catalyst Momentum":
                 catalyst = s.reason.split("confirmed by")[0].strip()
 
-        # High confidence with HTF alignment or standalone high-conviction setup
-        expected_bias = "bullish" if direction == "BUY" else "bearish"
-        if (cand.confidence >= 85 and bias == expected_bias) or cand.confidence >= 88:
-            return _make_report(symbol, direction, cand.confidence, trend, close, atr_val, cand.reason, data=data, catalyst=catalyst)
-
-        # Two different strategies agreeing
+        # Two different strategies agreeing (Confluence)
         if len(same) >= 2 and len({s.name for s in same}) >= 2:
             avg = sum(s.confidence for s in same) // len(same)
-            reason = " | ".join(s.reason for s in same)
-            return _make_report(symbol, direction, avg, trend, close, atr_val, reason, data=data, catalyst=catalyst)
+            if avg >= gate_threshold:
+                reason = " | ".join(s.reason for s in same)
+                return _make_report(symbol, direction, avg, trend, close, atr_val, reason, data=data, catalyst=catalyst)
 
-    # Fallback to scoring (Forex only - Crypto requires dedicated strategy confluence)
-    if symbol not in CRYPTO_SYMBOLS:
-        fb_action, fb_conf, fb_reason, long_s, short_s = _fallback_scoring(data)
-        if fb_action != "WAIT" and fb_conf >= min_confidence:
-            return _make_report(symbol, fb_action, fb_conf, trend, close, atr_val, fb_reason, data=data)
+        # Quality Gate threshold (65% confidence)
+        if cand.confidence >= gate_threshold:
+            return _make_report(symbol, direction, cand.confidence, trend, close, atr_val, cand.reason, data=data, catalyst=catalyst)
 
-    _, _, fb_reason, long_s, short_s = _fallback_scoring(data)
+    # Multi-factor scoring fallback across all assets (Forex, Crypto, Memes)
+    fb_action, fb_conf, fb_reason, long_s, short_s = _fallback_scoring(data)
+    if fb_action != "WAIT" and fb_conf >= gate_threshold:
+        return _make_report(symbol, fb_action, fb_conf, trend, close, atr_val, fb_reason, data=data)
+
     fallback_conf = max(long_s, short_s)
     return _make_report(symbol, "WAIT", fallback_conf, trend, close, atr_val, fb_reason, data=data)
 

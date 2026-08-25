@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import threading
 import time
 from datetime import datetime
@@ -21,7 +21,7 @@ class AutoPilot:
 
     def __init__(
         self,
-        min_confidence: int = 80,
+        min_confidence: int = 65,
         cooldown_seconds: int = 3600,
         scan_delay_seconds: float = 8.0,
     ) -> None:
