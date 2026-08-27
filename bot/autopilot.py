@@ -145,7 +145,7 @@ class AutoPilot:
 
 
 # Global singleton instance
-autopilot = AutoPilot(min_confidence=80)
+autopilot = AutoPilot(min_confidence=65)
 
 
 def main() -> None:

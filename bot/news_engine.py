@@ -8,6 +8,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 import requests
+import xml.etree.ElementTree as ET
 
 
 BULLISH_KEYWORDS = {
