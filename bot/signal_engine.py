@@ -156,10 +156,6 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
-# ---------------------------------------------------------------------------
-# Rejection candle detection (stricter)
-# ---------------------------------------------------------------------------
-
 def check_rejection(row: pd.Series, direction: str) -> bool:
     body = abs(row["close"] - row["open"])
     upper_wick = row["high"] - max(row["open"], row["close"])
@@ -170,17 +166,13 @@ def check_rejection(row: pd.Series, direction: str) -> bool:
         return False
 
     if direction == "buy":
-        return (lower_wick > body * 2.0
-                and lower_wick >= total_range * 0.4
+        return bool(lower_wick > body * 1.8
+                and lower_wick >= total_range * 0.35
                 and row["close"] > row["open"])
-    return (upper_wick > body * 2.0
-            and upper_wick >= total_range * 0.4
+    return bool(upper_wick > body * 1.8
+            and upper_wick >= total_range * 0.35
             and row["close"] < row["open"])
 
-
-# ---------------------------------------------------------------------------
-# Higher-timeframe bias (EMA50 slope over last 5 bars)
-# ---------------------------------------------------------------------------
 
 def htf_bias(data: pd.DataFrame) -> str:
     ema50 = data["ema50"]
@@ -192,145 +184,9 @@ def htf_bias(data: pd.DataFrame) -> str:
     return "neutral"
 
 
-# ---------------------------------------------------------------------------
-# SL/TP multipliers per asset class
-# ---------------------------------------------------------------------------
-
-def _sl_tp_mult(symbol: str) -> tuple[float, float]:
-    if symbol in ("XAU_USD", "US30"):
-        return 2.0, 4.0
-    if symbol in CRYPTO_SYMBOLS:
-        return 2.5, 3.5
-    return 1.5, 3.0
-
-
-# ---------------------------------------------------------------------------
-# Strategy 1 — SMC Liquidity Sweep (ranging & trending)
-# ---------------------------------------------------------------------------
-
-def _smc_sweep(data: pd.DataFrame, bias: str = "neutral", symbol: str = "") -> StrategySignal:
-    last = data.iloc[-1]
-    prev = data.iloc[-2]
-    close = float(last["close"])
-
-    ref = data.iloc[-31:-1]
-    support = ref["low"].min()
-    resistance = ref["high"].max()
-
-    # For Crypto, strictly prohibit counter-trend knife-catching
-    if symbol in CRYPTO_SYMBOLS:
-        if bias == "bearish":  # Do not buy support sweeps in strong bearish crypto trend
-            allow_buy = False
-            allow_sell = True
-        elif bias == "bullish":
-            allow_buy = True
-            allow_sell = False
-        else:
-            allow_buy = allow_sell = True
-    else:
-        allow_buy = allow_sell = True
-
-    # Momentum divergence confirmation (momentum must not be expanding against the sweep)
-    macd_turning_up = last["macd_hist"] >= prev["macd_hist"]
-    macd_turning_down = last["macd_hist"] <= prev["macd_hist"]
-
-    if allow_buy and last["low"] < support and close > support and check_rejection(last, "buy") and macd_turning_up:
-        return StrategySignal(
-            "SMC Sweep", "BUY", 88,
-            f"Price swept below support ({support:.2f}) and closed back above with rejection & MACD slowing",
-        )
-    if allow_sell and last["high"] > resistance and close < resistance and check_rejection(last, "sell") and macd_turning_down:
-        return StrategySignal(
-            "SMC Sweep", "SELL", 88,
-            f"Price swept above resistance ({resistance:.2f}) and closed back below with rejection & MACD slowing",
-        )
-    return StrategySignal("SMC Sweep", "HOLD", 0, "")
-
-
-# ---------------------------------------------------------------------------
-# Strategy 2 — London Breakout (trending, ADX >= 22, Forex only)
-# ---------------------------------------------------------------------------
-
-def _london_breakout(data: pd.DataFrame, session_key: str | None, symbol: str = "") -> StrategySignal:
-    if symbol in CRYPTO_SYMBOLS:
-        return StrategySignal("London Breakout", "HOLD", 0, "")
-    last = data.iloc[-1]
-    prev = data.iloc[-2]
-    close = float(last["close"])
-    last_adx = float(last["adx"]) if pd.notna(last["adx"]) else -1
-
-    is_london = session_key == "london" or (7 <= last["time"].hour <= 15)
-    if not is_london or last_adx < 22:
-        return StrategySignal("London Breakout", "HOLD", 0, "")
-
-    mask = (
-        (data["time"].dt.date == last["time"].date())
-        & (data["time"].dt.hour >= 0) & (data["time"].dt.hour < 7)
-    )
-    asian = data.loc[mask]
-    if len(asian) < 4:
-        return StrategySignal("London Breakout", "HOLD", 0, "")
-
-    a_high, a_low = asian["high"].max(), asian["low"].min()
-
-    if prev["close"] <= a_high < close and close > last["open"]:
-        return StrategySignal("London Breakout", "BUY", 85,
-                              f"Broke above Asian High ({a_high:.2f})")
-    if prev["close"] >= a_low > close and close < last["open"]:
-        return StrategySignal("London Breakout", "SELL", 85,
-                              f"Broke below Asian Low ({a_low:.2f})")
-    return StrategySignal("London Breakout", "HOLD", 0, "")
-
-
-# ---------------------------------------------------------------------------
-# Strategy 3 — EMA Ribbon Pullback (trending, ADX >= 18)
-# ---------------------------------------------------------------------------
-
-def _ema_pullback(data: pd.DataFrame) -> StrategySignal:
-    last = data.iloc[-1]
-    prev = data.iloc[-2]
-    close = float(last["close"])
-
-    last_adx = float(last["adx"]) if pd.notna(last["adx"]) else -1
-    if last_adx < 18:
-        return StrategySignal("EMA Pullback", "HOLD", 0, "")
-
-    bull = last["ema20"] > last["ema50"]
-    bear = last["ema20"] < last["ema50"]
-
-    # Pullback into dynamic EMA 20/50 zone in bullish trend
-    if bull and (prev["low"] <= last["ema20"] * 1.003 or prev["low"] <= last["ema50"]) and close >= last["ema20"] * 0.998 and (check_rejection(last, "buy") or close > last["open"]):
-        return StrategySignal("EMA Pullback", "BUY", 80,
-                              "Pullback to EMA zone in bullish trend, dynamic bounce confirming")
-    if bear and (prev["high"] >= last["ema20"] * 0.997 or prev["high"] >= last["ema50"]) and close <= last["ema20"] * 1.002 and (check_rejection(last, "sell") or close < last["open"]):
-        return StrategySignal("EMA Pullback", "SELL", 80,
-                              "Pullback to EMA zone in bearish trend, dynamic bounce confirming")
-    return StrategySignal("EMA Pullback", "HOLD", 0, "")
-
-
-# ---------------------------------------------------------------------------
-# Strategy 4 — Mean Reversion (ranging, ADX < 22)
-# ---------------------------------------------------------------------------
-
-def _mean_reversion(data: pd.DataFrame) -> StrategySignal:
-    last = data.iloc[-1]
-
-    last_adx = float(last["adx"]) if pd.notna(last["adx"]) else 999
-    if last_adx >= 22:
-        return StrategySignal("Mean Reversion", "HOLD", 0, "")
-
-    if last["low"] <= last["lower_band"] and last["rsi"] <= 38 and check_rejection(last, "buy"):
-        return StrategySignal("Mean Reversion", "BUY", 78,
-                              f"Lower BB touch ({last['lower_band']:.2f}), RSI {last['rsi']:.0f}, bullish rejection")
-    if last["high"] >= last["upper_band"] and last["rsi"] >= 62 and check_rejection(last, "sell"):
-        return StrategySignal("Mean Reversion", "SELL", 78,
-                              f"Upper BB touch ({last['upper_band']:.2f}), RSI {last['rsi']:.0f}, bearish rejection")
-    return StrategySignal("Mean Reversion", "HOLD", 0, "")
-
-
-# ---------------------------------------------------------------------------
-# Strategy 5 — Crypto Momentum Surge (Trend Breakout & Dynamic EMA Bounce)
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 🚀 PART 1: CRYPTO & MEMECOIN STRATEGY ENGINE (100% UNTOUCHED & ISOLATED)
+# ===========================================================================
 
 CRYPTO_SYMBOLS = {
     # Major Cryptos (/c1)
@@ -342,6 +198,14 @@ CRYPTO_SYMBOLS = {
     # Trending & Narrative Memecoins (/m2)
     "TRUMP_USD", "BOME_USD", "PENGU_USD", "MOG_USD", "PEOPLE_USD", "ELON_USD",
 }
+
+
+def _sl_tp_mult(symbol: str) -> tuple[float, float]:
+    if symbol in ("XAU_USD", "US30"):
+        return 2.0, 4.0
+    if symbol in CRYPTO_SYMBOLS:
+        return 2.5, 3.5
+    return 1.8, 3.5
 
 
 def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
@@ -364,11 +228,9 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
     prior_high = ref["high"].max()
     prior_low = ref["low"].min()
 
-    # EMA Trend & Alignment (EMA20 > EMA50 for active trend)
     bull_trend = last["ema20"] > last["ema50"] and close > last["ema20"] * 0.998
     bear_trend = last["ema20"] < last["ema50"] and close < last["ema20"] * 1.002
 
-    # Bullish Momentum Surge
     if bull_trend and 48 <= last_rsi <= 75 and last["macd_hist"] > 0:
         is_breakout = close > prior_high and close > open_p and body >= 0.40 * total_range
         is_ema_bounce = prev["low"] <= last["ema20"] * 1.003 and close >= last["ema20"]
@@ -384,7 +246,6 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
                 f"EMA 20 dynamic support bounce, RSI {last_rsi:.0f}, strong trend continuation",
             )
 
-    # Bearish Momentum Surge
     if bear_trend and 25 <= last_rsi <= 52 and last["macd_hist"] < 0:
         is_breakdown = close < prior_low and close < open_p and body >= 0.40 * total_range
         is_ema_reject = prev["high"] >= last["ema20"] * 0.997 and close <= last["ema20"]
@@ -403,10 +264,6 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
     return StrategySignal("Crypto Momentum Surge", "HOLD", 0, "")
 
 
-# ---------------------------------------------------------------------------
-# Strategy 6 — News Catalyst Momentum (Breaking News, Trump & Macro Shifts)
-# ---------------------------------------------------------------------------
-
 def _news_catalyst_momentum(data: pd.DataFrame, symbol: str) -> StrategySignal:
     try:
         from bot.news_engine import get_asset_catalyst
@@ -421,35 +278,75 @@ def _news_catalyst_momentum(data: pd.DataFrame, symbol: str) -> StrategySignal:
     last = data.iloc[-1]
     close = float(last["close"])
     ema20 = float(last["ema20"])
-    rsi = float(last["rsi"]) if pd.notna(last["rsi"]) else 50
-    adx = float(last["adx"]) if pd.notna(last["adx"]) else 20
+    rsi_v = float(last["rsi"]) if pd.notna(last["rsi"]) else 50
+    adx_v = float(last["adx"]) if pd.notna(last["adx"]) else 20
 
-    # Bullish News Catalyst + Technical Expansion
-    if sentiment_label == "Bullish" and close >= ema20 and rsi >= 48 and adx >= 18:
+    if sentiment_label == "Bullish" and close >= ema20 and rsi_v >= 48 and adx_v >= 18:
         conf = min(95, 86 + abs(score) // 10)
         return StrategySignal(
-            "News Catalyst Momentum",
-            "BUY",
-            conf,
-            f"Bullish news catalyst: '{headline[:60]}...' confirmed by EMA20 breakout (RSI {rsi:.0f}, ADX {adx:.0f})",
+            "News Catalyst Momentum", "BUY", conf,
+            f"Bullish news catalyst: '{headline[:60]}...' confirmed by EMA20 breakout (RSI {rsi_v:.0f}, ADX {adx_v:.0f})",
         )
 
-    # Bearish News Catalyst + Technical Breakdown
-    if sentiment_label == "Bearish" and close <= ema20 and rsi <= 52 and adx >= 18:
+    if sentiment_label == "Bearish" and close <= ema20 and rsi_v <= 52 and adx_v >= 18:
         conf = min(95, 86 + abs(score) // 10)
         return StrategySignal(
-            "News Catalyst Momentum",
-            "SELL",
-            conf,
-            f"Bearish news catalyst: '{headline[:60]}...' confirmed by EMA20 breakdown (RSI {rsi:.0f}, ADX {adx:.0f})",
+            "News Catalyst Momentum", "SELL", conf,
+            f"Bearish news catalyst: '{headline[:60]}...' confirmed by EMA20 breakdown (RSI {rsi_v:.0f}, ADX {adx_v:.0f})",
         )
 
     return StrategySignal("News Catalyst Momentum", "HOLD", 0, "")
 
 
-# ---------------------------------------------------------------------------
-# Fallback — 5-factor weighted checklist
-# ---------------------------------------------------------------------------
+def _mean_reversion(data: pd.DataFrame) -> StrategySignal:
+    last = data.iloc[-1]
+    last_adx = float(last["adx"]) if pd.notna(last["adx"]) else 999
+    if last_adx >= 22:
+        return StrategySignal("Mean Reversion", "HOLD", 0, "")
+
+    if last["low"] <= last["lower_band"] and last["rsi"] <= 38 and check_rejection(last, "buy"):
+        return StrategySignal("Mean Reversion", "BUY", 78,
+                              f"Lower BB touch ({last['lower_band']:.2f}), RSI {last['rsi']:.0f}, bullish rejection")
+    if last["high"] >= last["upper_band"] and last["rsi"] >= 62 and check_rejection(last, "sell"):
+        return StrategySignal("Mean Reversion", "SELL", 78,
+                              f"Upper BB touch ({last['upper_band']:.2f}), RSI {last['rsi']:.0f}, bearish rejection")
+    return StrategySignal("Mean Reversion", "HOLD", 0, "")
+
+
+def _smc_sweep(data: pd.DataFrame, bias: str = "neutral", symbol: str = "") -> StrategySignal:
+    last = data.iloc[-1]
+    prev = data.iloc[-2]
+    close = float(last["close"])
+
+    ref = data.iloc[-31:-1]
+    support = ref["low"].min()
+    resistance = ref["high"].max()
+
+    if symbol in CRYPTO_SYMBOLS:
+        if bias == "bearish":
+            allow_buy, allow_sell = False, True
+        elif bias == "bullish":
+            allow_buy, allow_sell = True, False
+        else:
+            allow_buy = allow_sell = True
+    else:
+        allow_buy = allow_sell = True
+
+    macd_turning_up = last["macd_hist"] >= prev["macd_hist"]
+    macd_turning_down = last["macd_hist"] <= prev["macd_hist"]
+
+    if allow_buy and last["low"] < support and close > support and check_rejection(last, "buy") and macd_turning_up:
+        return StrategySignal(
+            "SMC Sweep", "BUY", 88,
+            f"Price swept below support ({support:.2f}) and closed back above with rejection & MACD slowing",
+        )
+    if allow_sell and last["high"] > resistance and close < resistance and check_rejection(last, "sell") and macd_turning_down:
+        return StrategySignal(
+            "SMC Sweep", "SELL", 88,
+            f"Price swept above resistance ({resistance:.2f}) and closed back below with rejection & MACD slowing",
+        )
+    return StrategySignal("SMC Sweep", "HOLD", 0, "")
+
 
 _FACTOR_WEIGHTS = [
     ("trend", 0.30),
@@ -507,13 +404,13 @@ def _f_momentum(data: pd.DataFrame) -> tuple[int, int, list[str], list[str]]:
     lg, sg = 0, 0
     lr, sr = [], []
 
-    rsi = float(last["rsi"]) if pd.notna(last["rsi"]) else 50
-    if 50 <= rsi <= 70:
+    rsi_v = float(last["rsi"]) if pd.notna(last["rsi"]) else 50
+    if 50 <= rsi_v <= 70:
         lg += 50
-        lr.append(f"RSI {rsi:.0f}")
-    if 30 <= rsi <= 50:
+        lr.append(f"RSI {rsi_v:.0f}")
+    if 30 <= rsi_v <= 50:
         sg += 50
-        sr.append(f"RSI {rsi:.0f}")
+        sr.append(f"RSI {rsi_v:.0f}")
 
     macd_rising = last["macd_hist"] > prev["macd_hist"]
     macd_falling = last["macd_hist"] < prev["macd_hist"]
@@ -563,7 +460,7 @@ def _f_price_action(data: pd.DataFrame) -> tuple[int, int, list[str], list[str]]
     if check_rejection(last, "buy"):
         lg = 100
         lr.append("bullish rejection")
-    elif check_rejection(last, "sell"):
+    if check_rejection(last, "sell"):
         sg = 100
         sr.append("bearish rejection")
 
@@ -573,7 +470,7 @@ def _f_price_action(data: pd.DataFrame) -> tuple[int, int, list[str], list[str]]
 _FALLBACK_SCORERS = [_f_trend, _f_structure, _f_momentum, _f_volatility, _f_price_action]
 
 
-def _fallback_scoring(data: pd.DataFrame) -> tuple[str, int, str, int, str]:
+def _fallback_scoring(data: pd.DataFrame) -> tuple[str, int, str, int, int]:
     total_long = 0.0
     total_short = 0.0
     all_lr, all_sr = [], []
@@ -595,10 +492,6 @@ def _fallback_scoring(data: pd.DataFrame) -> tuple[str, int, str, int, str]:
 
     return "WAIT", max(long_score, short_score), "Setup not strong enough", long_score, short_score
 
-
-# ---------------------------------------------------------------------------
-# Quality gate — picks the best signal from strategies
-# ---------------------------------------------------------------------------
 
 def _make_report(symbol: str, action: str, confidence: int, trend: str,
                  close: float, atr_val: float, reason: str,
@@ -671,7 +564,6 @@ def _quality_gate(
             continue
         same = buys if direction == "BUY" else sells
 
-        # Extract catalyst headline if news strategy triggered
         catalyst = None
         for s in same:
             if s.name == "News Catalyst Momentum":
@@ -688,7 +580,6 @@ def _quality_gate(
         if cand.confidence >= gate_threshold:
             return _make_report(symbol, direction, cand.confidence, trend, close, atr_val, cand.reason, data=data, catalyst=catalyst)
 
-    # Multi-factor scoring fallback across all assets (Forex, Crypto, Memes)
     fb_action, fb_conf, fb_reason, long_s, short_s = _fallback_scoring(data)
     if fb_action != "WAIT" and fb_conf >= gate_threshold:
         return _make_report(symbol, fb_action, fb_conf, trend, close, atr_val, fb_reason, data=data)
@@ -697,9 +588,401 @@ def _quality_gate(
     return _make_report(symbol, "WAIT", fallback_conf, trend, close, atr_val, fb_reason, data=data)
 
 
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
+def _analyze_crypto_setup(
+    symbol: str,
+    data: pd.DataFrame,
+    bias: str,
+    min_confidence: int = 65,
+) -> SignalReport:
+    """
+    Dedicated 100% UNTOUCHED Crypto & Memecoin Trading Pipeline.
+    """
+    strategies = [
+        _smc_sweep(data, bias, symbol),
+        _mean_reversion(data),
+        _crypto_momentum_surge(data, symbol),
+        _news_catalyst_momentum(data, symbol),
+    ]
+    return _quality_gate(strategies, bias, data, symbol, min_confidence)
+
+
+# ===========================================================================
+# 🏛️ PART 2: INSTITUTIONAL FOREX STRATEGY ENGINE (ICT, SESSIONS, FVG)
+# ===========================================================================
+
+FOREX_SYMBOLS = {
+    # Forex Majors (/f1)
+    "EUR_USD", "GBP_USD", "USD_JPY", "USD_CHF", "AUD_USD", "USD_CAD",
+    # Forex Crosses & Commodities (/f2)
+    "NZD_USD", "EUR_GBP", "EUR_JPY", "GBP_JPY", "XAU_USD", "US30",
+}
+
+
+def _forex_session_filter(data: pd.DataFrame, symbol: str) -> tuple[bool, str]:
+    """
+    Evaluates institutional trading session windows.
+    Returns (is_active_session, session_name).
+    """
+    if "time" not in data.columns:
+        return True, "Standard Session"
+
+    last_time = data.iloc[-1]["time"]
+    hour = last_time.hour if hasattr(last_time, "hour") else 12
+    is_asian_pair = symbol in {"USD_JPY", "EUR_JPY", "GBP_JPY", "AUD_USD", "NZD_USD"}
+
+    # London Open & Overlap: 07:00 - 16:30 UTC (Peak Institutional Volume)
+    if 7 <= hour <= 16:
+        return True, "London / NY Session (Peak Volume)"
+    
+    # New York Afternoon: 16:30 - 20:00 UTC
+    if 16 < hour <= 20:
+        return True, "New York Afternoon Session"
+
+    # Tokyo / Asian Session: 00:00 - 07:00 UTC
+    if 0 <= hour < 7:
+        if is_asian_pair:
+            return True, "Tokyo / Asian Session"
+        return False, "Low Liquidity Asian Night (Waiting for London 07:00 UTC)"
+
+    return False, "Off-Hours Market Roll (Low Liquidity)"
+
+
+def _forex_ict_liquidity_sweep(data: pd.DataFrame, symbol: str) -> StrategySignal:
+    """
+    Identifies institutional stop hunts / liquidity raids above Asian High or below Asian Low,
+    followed by a Market Structure Shift (MSS) displacement candle back inside the range.
+    """
+    last = data.iloc[-1]
+    prev = data.iloc[-2]
+    close = float(last["close"])
+    open_p = float(last["open"])
+
+    ref = data.iloc[-40:-1]
+    swing_high = float(ref["high"].max())
+    swing_low = float(ref["low"].min())
+
+    # Bullish ICT Sweep: Swept below swing low (Sell-Side Liquidity), rejected, and closed with strong bullish body
+    swept_low = float(last["low"]) < swing_low and close > swing_low
+    is_bullish_displacement = close > open_p and (close - open_p) >= 0.35 * (last["high"] - last["low"])
+    has_buy_rejection = check_rejection(last, "buy") or (last["low"] < prev["low"] and close > prev["high"])
+
+    if swept_low and (is_bullish_displacement or has_buy_rejection) and last["macd_hist"] >= prev["macd_hist"]:
+        return StrategySignal(
+            "ICT Liquidity Sweep (MSS)",
+            "BUY",
+            92,
+            f"Institutional liquidity raid below swing low ({swing_low:.4f}) with Market Structure Shift back into range",
+        )
+
+    # Bearish ICT Sweep: Swept above swing high (Buy-Side Liquidity), rejected, and closed with strong bearish body
+    swept_high = float(last["high"]) > swing_high and close < swing_high
+    is_bearish_displacement = close < open_p and (open_p - close) >= 0.35 * (last["high"] - last["low"])
+    has_sell_rejection = check_rejection(last, "sell") or (last["high"] > prev["high"] and close < prev["low"])
+
+    if swept_high and (is_bearish_displacement or has_sell_rejection) and last["macd_hist"] <= prev["macd_hist"]:
+        return StrategySignal(
+            "ICT Liquidity Sweep (MSS)",
+            "SELL",
+            92,
+            f"Institutional liquidity raid above swing high ({swing_high:.4f}) with Market Structure Shift back into range",
+        )
+
+    return StrategySignal("ICT Liquidity Sweep (MSS)", "HOLD", 0, "")
+
+
+def _forex_fvg_retest(data: pd.DataFrame, symbol: str) -> StrategySignal:
+    """
+    Detects a 3-candle Fair Value Gap (FVG) / Order Block in the direction of the 200/50 EMA trend
+    and triggers when price pulls into the imbalance zone for a discounted entry.
+    """
+    if len(data) < 10:
+        return StrategySignal("Fair Value Gap (FVG)", "HOLD", 0, "")
+
+    last = data.iloc[-1]
+    c1 = data.iloc[-4]
+    c2 = data.iloc[-3]
+    c3 = data.iloc[-2]
+    close = float(last["close"])
+
+    ema50 = float(last["ema50"])
+    ema200 = float(last["ema200"])
+    adx_val = float(last["adx"]) if pd.notna(last["adx"]) else 20
+
+    # Bullish FVG: Candle 1 High < Candle 3 Low (Gap between C1 High and C3 Low)
+    is_bullish_fvg = c3["low"] > c1["high"] and c2["close"] > c2["open"]
+    if is_bullish_fvg and close > ema50 and ema50 > ema200 and adx_val >= 18:
+        fvg_top = float(c3["low"])
+        fvg_bottom = float(c1["high"])
+        if fvg_bottom <= float(last["low"]) <= fvg_top * 1.002 and close >= fvg_bottom:
+            return StrategySignal(
+                "Fair Value Gap (FVG)",
+                "BUY",
+                88,
+                f"Bullish FVG imbalance retest ({fvg_bottom:.4f} - {fvg_top:.4f}) in institutional 200 EMA uptrend",
+            )
+
+    # Bearish FVG: Candle 1 Low > Candle 3 High (Gap between C1 Low and C3 High)
+    is_bearish_fvg = c3["high"] < c1["low"] and c2["close"] < c2["open"]
+    if is_bearish_fvg and close < ema50 and ema50 < ema200 and adx_val >= 18:
+        fvg_top = float(c1["low"])
+        fvg_bottom = float(c3["high"])
+        if fvg_bottom * 0.998 <= float(last["high"]) <= fvg_top and close <= fvg_top:
+            return StrategySignal(
+                "Fair Value Gap (FVG)",
+                "SELL",
+                88,
+                f"Bearish FVG imbalance retest ({fvg_bottom:.4f} - {fvg_top:.4f}) in institutional 200 EMA downtrend",
+            )
+
+    return StrategySignal("Fair Value Gap (FVG)", "HOLD", 0, "")
+
+
+def _forex_london_ny_displacement(data: pd.DataFrame, session_key: str | None, symbol: str) -> StrategySignal:
+    """
+    Captures high-volume institutional breakout displacement during London/NY sessions.
+    """
+    if "time" not in data.columns:
+        return StrategySignal("London/NY Displacement", "HOLD", 0, "")
+
+    last = data.iloc[-1]
+    prev = data.iloc[-2]
+    close = float(last["close"])
+    atr_val = float(last["atr"]) if pd.notna(last["atr"]) else 0.0010
+    adx_val = float(last["adx"]) if pd.notna(last["adx"]) else 0
+
+    if adx_val < 20:
+        return StrategySignal("London/NY Displacement", "HOLD", 0, "")
+
+    mask = (
+        (data["time"].dt.date == last["time"].date())
+        & (data["time"].dt.hour >= 0) & (data["time"].dt.hour < 7)
+    )
+    asian = data.loc[mask]
+    if len(asian) < 4:
+        return StrategySignal("London/NY Displacement", "HOLD", 0, "")
+
+    a_high = float(asian["high"].max())
+    a_low = float(asian["low"].min())
+    candle_size = float(last["high"] - last["low"])
+
+    if close > a_high and prev["close"] <= a_high and candle_size >= 0.9 * atr_val and close > last["open"]:
+        return StrategySignal(
+            "London/NY Displacement",
+            "BUY",
+            86,
+            f"Institutional displacement break above Asian High ({a_high:.4f}) with volume expansion",
+        )
+    if close < a_low and prev["close"] >= a_low and candle_size >= 0.9 * atr_val and close < last["open"]:
+        return StrategySignal(
+            "London/NY Displacement",
+            "SELL",
+            86,
+            f"Institutional displacement break below Asian Low ({a_low:.4f}) with volume expansion",
+        )
+
+    return StrategySignal("London/NY Displacement", "HOLD", 0, "")
+
+
+def _forex_htf_trend_pullback(data: pd.DataFrame, symbol: str) -> StrategySignal:
+    """
+    Multi-timeframe trend pullback to 50 EMA with 200 EMA directional bias.
+    """
+    last = data.iloc[-1]
+    prev = data.iloc[-2]
+    close = float(last["close"])
+    ema50 = float(last["ema50"])
+    ema200 = float(last["ema200"])
+    rsi_val = float(last["rsi"]) if pd.notna(last["rsi"]) else 50
+    adx_val = float(last["adx"]) if pd.notna(last["adx"]) else 20
+
+    if adx_val < 18:
+        return StrategySignal("Forex Trend Pullback", "HOLD", 0, "")
+
+    bull_trend = ema50 > ema200 and close > ema200
+    if bull_trend and prev["low"] <= ema50 * 1.002 and close >= ema50 and (check_rejection(last, "buy") or close > last["open"]) and 45 <= rsi_val <= 68:
+        return StrategySignal(
+            "Forex Trend Pullback",
+            "BUY",
+            84,
+            f"Dynamic 50 EMA bounce in 200 EMA macro uptrend (RSI {rsi_val:.0f}, ADX {adx_val:.0f})",
+        )
+
+    bear_trend = ema50 < ema200 and close < ema200
+    if bear_trend and prev["high"] >= ema50 * 0.998 and close <= ema50 and (check_rejection(last, "sell") or close < last["open"]) and 32 <= rsi_val <= 55:
+        return StrategySignal(
+            "Forex Trend Pullback",
+            "SELL",
+            84,
+            f"Dynamic 50 EMA rejection in 200 EMA macro downtrend (RSI {rsi_val:.0f}, ADX {adx_val:.0f})",
+        )
+
+    return StrategySignal("Forex Trend Pullback", "HOLD", 0, "")
+
+
+def _forex_structural_sl_tp(
+    symbol: str,
+    action: str,
+    close: float,
+    atr_val: float,
+    data: pd.DataFrame,
+) -> tuple[float, float, float, float]:
+    """
+    Computes institutional structural SL (behind swing low/high + buffer)
+    and multi-tier Take Profit targets (TP1 1:1.5, TP2 1:2.5, TP3 1:3.5).
+    """
+    if symbol in ("XAU_USD", "US30"):
+        min_buffer = atr_val * 2.0 if atr_val > 0 else 3.5
+    elif "JPY" in symbol:
+        min_buffer = max(atr_val * 1.8, 0.25)
+    else:
+        min_buffer = max(atr_val * 1.8, 0.0018)
+
+    if action == "BUY":
+        if len(data) >= 8:
+            swing_low = float(data.iloc[-8:-1]["low"].min())
+            sl = min(close - min_buffer, swing_low - atr_val * 0.4)
+        else:
+            sl = close - min_buffer
+        risk = max(close - sl, min_buffer)
+        tp1 = close + risk * 1.5
+        tp2 = close + risk * 2.5
+        tp3 = close + risk * 3.5
+    elif action == "SELL":
+        if len(data) >= 8:
+            swing_high = float(data.iloc[-8:-1]["high"].max())
+            sl = max(close + min_buffer, swing_high + atr_val * 0.4)
+        else:
+            sl = close + min_buffer
+        risk = max(sl - close, min_buffer)
+        tp1 = close - risk * 1.5
+        tp2 = close - risk * 2.5
+        tp3 = close - risk * 3.5
+    else:
+        sl = tp1 = tp2 = tp3 = 0.0
+
+    return sl, tp1, tp2, tp3
+
+
+def _analyze_forex_setup(
+    symbol: str,
+    data: pd.DataFrame,
+    bias: str,
+    min_confidence: int = 65,
+    session_key: str | None = None,
+) -> SignalReport:
+    """
+    Dedicated Institutional Forex & Commodities Engine.
+    Uses ICT Liquidity Sweeps, Fair Value Gaps, London/NY Displacement, and Structural SL.
+    """
+    last = data.iloc[-1]
+    close = float(last["close"])
+    atr_val = float(last["atr"]) if pd.notna(last["atr"]) else 0.0010
+    trend = "Bullish" if bias == "bullish" else ("Bearish" if bias == "bearish" else "Ranging")
+
+    is_session_active, session_name = _forex_session_filter(data, symbol)
+
+    strategies = [
+        _forex_ict_liquidity_sweep(data, symbol),
+        _forex_fvg_retest(data, symbol),
+        _forex_london_ny_displacement(data, session_key, symbol),
+        _forex_htf_trend_pullback(data, symbol),
+    ]
+
+    buys = [s for s in strategies if s.action == "BUY"]
+    sells = [s for s in strategies if s.action == "SELL"]
+
+    best_buy = max(buys, key=lambda s: s.confidence) if buys else None
+    best_sell = max(sells, key=lambda s: s.confidence) if sells else None
+
+    gate_threshold = min_confidence if (min_confidence is not None and min_confidence > 0) else 65
+
+    for cand, direction in [(best_buy, "BUY"), (best_sell, "SELL")]:
+        if cand is None:
+            continue
+        same = buys if direction == "BUY" else sells
+
+        if len(same) >= 2 and len({s.name for s in same}) >= 2:
+            avg = sum(s.confidence for s in same) // len(same)
+            if avg >= gate_threshold:
+                reason = " | ".join(s.reason for s in same)
+                sl, tp1, tp2, tp3 = _forex_structural_sl_tp(symbol, direction, close, atr_val, data)
+                return SignalReport(
+                    symbol=DISPLAY_NAMES.get(symbol, symbol),
+                    action=direction,
+                    confidence=avg,
+                    trend=trend,
+                    entry=close,
+                    stop_loss=sl,
+                    take_profit=tp2,
+                    reason=f"{reason} [{session_name}]",
+                    tp1=tp1,
+                    tp2=tp2,
+                    tp3=tp3,
+                )
+
+        if cand.confidence >= gate_threshold:
+            sl, tp1, tp2, tp3 = _forex_structural_sl_tp(symbol, direction, close, atr_val, data)
+            return SignalReport(
+                symbol=DISPLAY_NAMES.get(symbol, symbol),
+                action=direction,
+                confidence=cand.confidence,
+                trend=trend,
+                entry=close,
+                stop_loss=sl,
+                take_profit=tp2,
+                reason=f"{cand.reason} [{session_name}]",
+                tp1=tp1,
+                tp2=tp2,
+                tp3=tp3,
+            )
+
+    # If off session and no institutional setup
+    if not is_session_active:
+        return SignalReport(
+            symbol=DISPLAY_NAMES.get(symbol, symbol),
+            action="WAIT",
+            confidence=40,
+            trend=trend,
+            entry=None,
+            stop_loss=None,
+            take_profit=None,
+            reason=f"{session_name}. Institutional volume lowest during off-hours.",
+        )
+
+    # Fallback to multi-factor scoring during active session
+    fb_action, fb_conf, fb_reason, long_s, short_s = _fallback_scoring(data)
+    if fb_action != "WAIT" and fb_conf >= gate_threshold and is_session_active:
+        sl, tp1, tp2, tp3 = _forex_structural_sl_tp(symbol, fb_action, close, atr_val, data)
+        return SignalReport(
+            symbol=DISPLAY_NAMES.get(symbol, symbol),
+            action=fb_action,
+            confidence=fb_conf,
+            trend=trend,
+            entry=close,
+            stop_loss=sl,
+            take_profit=tp2,
+            reason=f"{fb_reason} [{session_name}]",
+            tp1=tp1,
+            tp2=tp2,
+            tp3=tp3,
+        )
+
+    fallback_conf = max(long_s, short_s)
+    return SignalReport(
+        symbol=DISPLAY_NAMES.get(symbol, symbol),
+        action="WAIT",
+        confidence=fallback_conf,
+        trend=trend,
+        entry=None,
+        stop_loss=None,
+        take_profit=None,
+        reason=f"No institutional sweep/FVG confluence ({session_name})",
+    )
+
+
+# ===========================================================================
+# 🌐 PUBLIC ENTRY POINT (MARKET ROUTER)
+# ===========================================================================
 
 def analyze_setup(
     symbol: str,
@@ -717,13 +1000,9 @@ def analyze_setup(
     data = compute_indicators(prices)
     bias = htf_bias(data)
 
-    strategies = [
-        _smc_sweep(data, bias, symbol),
-        _london_breakout(data, session_key, symbol),
-        _ema_pullback(data),
-        _mean_reversion(data),
-        _crypto_momentum_surge(data, symbol),
-        _news_catalyst_momentum(data, symbol),
-    ]
+    # Route 1: Crypto & Memecoins (100% Isolated & Untouched)
+    if symbol in CRYPTO_SYMBOLS:
+        return _analyze_crypto_setup(symbol, data, bias, min_confidence=min_confidence)
 
-    return _quality_gate(strategies, bias, data, symbol, min_confidence)
+    # Route 2: Dedicated Institutional Forex Engine (ICT Sweeps, FVG, Sessions)
+    return _analyze_forex_setup(symbol, data, bias, min_confidence=min_confidence, session_key=session_key)

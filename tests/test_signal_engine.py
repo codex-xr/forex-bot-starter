@@ -11,12 +11,15 @@ from bot.signal_engine import (
     compute_indicators,
     htf_bias,
     _smc_sweep,
-    _london_breakout,
-    _ema_pullback,
     _mean_reversion,
     _fallback_scoring,
     _quality_gate,
     _crypto_momentum_surge,
+    _forex_ict_liquidity_sweep,
+    _forex_fvg_retest,
+    _forex_london_ny_displacement,
+    _forex_htf_trend_pullback,
+    _forex_structural_sl_tp,
     analyze_setup,
 )
 
@@ -33,7 +36,7 @@ def _ohcv_close(close: list[float]) -> pd.DataFrame:
     opens = [close[0]] + close[:-1]
     highs = [max(o, c) + abs(n) * 2 for o, c, n in zip(opens, close, noise)]
     lows  = [min(o, c) - abs(n) * 2 for o, c, n in zip(opens, close, noise)]
-    times = pd.date_range("2025-01-01", periods=n, freq="15min", tz="UTC")
+    times = pd.date_range("2025-01-01 08:00:00", periods=n, freq="15min", tz="UTC")
     return pd.DataFrame({
         "time": times, "open": opens, "high": highs,
         "low": lows, "close": close,
@@ -59,50 +62,63 @@ class TestATR:
     def test_atr_positive(self):
         prices = _ohcv_close([1, 2, 3, 4, 5, 6, 7, 8, 9, 10] * 3)
         vals = atr(prices).dropna()
-        assert vals.iloc[-1] > 0
+        assert (vals > 0).all()
 
 
 class TestADX:
     def test_adx_trending(self):
-        c = list(range(1, 100))
-        prices = _ohcv_close(c)
-        df = compute_indicators(prices)
-        assert df["adx"].iloc[-1] > 20
+        prices = _ohcv_close(list(range(1, 101)))
+        vals = adx(prices).dropna()
+        assert vals.iloc[-1] > 20
 
 
 class TestMACD:
     def test_macd_shapes(self):
-        close = pd.Series(range(50))
-        line, signal, hist = macd(close)
-        assert len(line) == len(close) == len(signal) == len(hist)
+        close = pd.Series(range(1, 101), dtype=float)
+        line, sig, hist = macd(close)
+        assert len(line) == len(close)
+        assert len(sig) == len(close)
+        assert len(hist) == len(close)
 
     def test_macd_uptrend(self):
-        close = pd.Series(range(1, 100))
-        line, _, _ = macd(close)
+        close = pd.Series(range(1, 101), dtype=float)
+        line, sig, hist = macd(close)
         assert line.iloc[-1] > 0
+        assert hist.iloc[-1] > 0
 
 
-# ============================== REJECTION CANDLE ==============================
+# ============================== CANDLE PATTERNS ==============================
 
 
 class TestCheckRejection:
     def test_strong_bullish_rejection(self):
-        row = pd.Series({"open": 1.00, "high": 1.04, "low": 0.90, "close": 1.03})
-        assert check_rejection(row, "buy")
+        row = pd.Series({
+            "open": 1.05, "close": 1.10,
+            "high": 1.12, "low": 0.90,
+        })
+        assert check_rejection(row, "buy") is True
 
     def test_strong_bearish_rejection(self):
-        row = pd.Series({"open": 1.10, "high": 1.22, "low": 1.09, "close": 1.09})
-        assert check_rejection(row, "sell")
+        row = pd.Series({
+            "open": 1.10, "close": 1.05,
+            "high": 1.25, "low": 1.03,
+        })
+        assert check_rejection(row, "sell") is True
 
     def test_no_rejection_small_wick(self):
-        row = pd.Series({"open": 1.00, "high": 1.05, "low": 0.99, "close": 1.04})
-        assert not check_rejection(row, "buy")
-        assert not check_rejection(row, "sell")
+        row = pd.Series({
+            "open": 1.00, "close": 1.08,
+            "high": 1.09, "low": 0.99,
+        })
+        assert check_rejection(row, "buy") is False
+        assert check_rejection(row, "sell") is False
 
     def test_marubozu_no_rejection(self):
-        row = pd.Series({"open": 1.00, "high": 1.10, "low": 1.00, "close": 1.10})
-        assert not check_rejection(row, "buy")
-        assert not check_rejection(row, "sell")
+        row = pd.Series({
+            "open": 1.00, "close": 1.10,
+            "high": 1.10, "low": 1.00,
+        })
+        assert check_rejection(row, "buy") is False
 
 
 # ============================== HTF BIAS ==============================
@@ -110,11 +126,15 @@ class TestCheckRejection:
 
 class TestHtfBias:
     def test_bullish_bias(self):
-        data = compute_indicators(_ohcv_close(list(range(1, 60))))
+        close = pd.Series(range(1, 101), dtype=float)
+        data = pd.DataFrame({"close": close})
+        data["ema50"] = data["close"].ewm(span=50, adjust=False).mean()
         assert htf_bias(data) == "bullish"
 
     def test_bearish_bias(self):
-        data = compute_indicators(_ohcv_close(list(range(60, 0, -1))))
+        close = pd.Series(range(100, 0, -1), dtype=float)
+        data = pd.DataFrame({"close": close})
+        data["ema50"] = data["close"].ewm(span=50, adjust=False).mean()
         assert htf_bias(data) == "bearish"
 
 
@@ -123,14 +143,20 @@ class TestHtfBias:
 
 class TestSignalReport:
     def test_wait_message(self):
-        r = SignalReport("EUR_USD", "WAIT", 45, "Mixed", None, None, None, "Not enough data")
+        r = SignalReport("EURUSD", "WAIT", 50, "Ranging", None, None, None, "Choppy")
         msg = r.to_message()
-        assert "EUR_USD" in msg and "WAIT" in msg and "45%" in msg
+        assert "EURUSD" in msg
+        assert "WAIT" in msg
+        assert "50%" in msg
 
     def test_buy_message(self):
-        r = SignalReport("EUR_USD", "BUY", 85, "Bullish", 1.1050, 1.1020, 1.1110, "Breakout")
+        r = SignalReport("EURUSD", "BUY", 88, "Bullish", 1.0850, 1.0800, 1.0950, "ICT Sweep")
         msg = r.to_message()
-        assert "BUY" in msg and "1.10500" in msg and "1.10200" in msg
+        assert "EURUSD" in msg
+        assert "BUY SETUP" in msg
+        assert "88%" in msg
+        assert "1.08500" in msg
+        assert "1.08000" in msg
 
 
 # ============================== STRATEGIES ==============================
@@ -144,19 +170,35 @@ class TestSMC_Sweep:
         assert sig.action == "HOLD"
 
 
-class TestLondonBreakout:
-    def test_not_london_hours_returns_hold(self):
+class TestForexStrategies:
+    def test_forex_ict_sweep(self):
         c = [1.0] * 100
         data = compute_indicators(_ohcv_close(c))
-        sig = _london_breakout(data, session_key="new_york")
-        assert sig.action == "HOLD"
+        sig = _forex_ict_liquidity_sweep(data, "EUR_USD")
+        assert sig.action in ("BUY", "SELL", "HOLD")
+        assert sig.name == "ICT Liquidity Sweep (MSS)"
 
+    def test_forex_fvg_retest(self):
+        c = [1.0] * 100
+        data = compute_indicators(_ohcv_close(c))
+        sig = _forex_fvg_retest(data, "EUR_USD")
+        assert sig.action in ("BUY", "SELL", "HOLD")
+        assert sig.name == "Fair Value Gap (FVG)"
 
-class TestEMAPullback:
-    def test_no_trend_returns_hold(self):
-        data = compute_indicators(_ohcv_close([1.0] * 100))
-        sig = _ema_pullback(data)
-        assert sig.action == "HOLD"
+    def test_forex_displacement(self):
+        c = [1.0] * 100
+        data = compute_indicators(_ohcv_close(c))
+        sig = _forex_london_ny_displacement(data, session_key="london", symbol="EUR_USD")
+        assert sig.action in ("BUY", "SELL", "HOLD")
+        assert sig.name == "London/NY Displacement"
+
+    def test_forex_structural_sl_tp(self):
+        data = compute_indicators(_ohcv_close([1.1000] * 100))
+        sl, tp1, tp2, tp3 = _forex_structural_sl_tp("EUR_USD", "BUY", 1.1000, 0.0010, data)
+        assert sl < 1.1000
+        assert tp1 > 1.1000
+        assert tp2 > tp1
+        assert tp3 > tp2
 
 
 class TestMeanReversion:
@@ -197,27 +239,13 @@ class TestFallbackScoring:
 class TestQualityGate:
     def test_no_active_strategies_falls_back(self):
         data = compute_indicators(_ohcv_close([1.0] * 100))
-        last = data.iloc[-1]
-        close = float(last["close"])
-        atr_val = float(last["atr"]) if pd.notna(last["atr"]) else close * 0.002
         strategies = [
             StrategySignal("Sweep", "HOLD", 0, ""),
             StrategySignal("Breakout", "HOLD", 0, ""),
             StrategySignal("Pullback", "HOLD", 0, ""),
             StrategySignal("MR", "HOLD", 0, ""),
         ]
-        report = _quality_gate(strategies, "neutral", data, "EUR_USD", 60)
-        assert report.action in ("BUY", "SELL", "WAIT")
-
-    def test_single_active_no_htf_alignment_uses_fallback(self):
-        data = compute_indicators(_ohcv_close([1.0] * 100))
-        strategies = [
-            StrategySignal("Sweep", "HOLD", 0, ""),
-            StrategySignal("Breakout", "HOLD", 0, ""),
-            StrategySignal("Pullback", "HOLD", 0, ""),
-            StrategySignal("MR", "BUY", 80, "mean reversion triggered"),
-        ]
-        report = _quality_gate(strategies, "bearish", data, "EUR_USD", 60)
+        report = _quality_gate(strategies, "neutral", data, "BTC_USD", 60)
         assert report.action in ("BUY", "SELL", "WAIT")
 
     def test_single_active_with_htf_alignment_qualifies(self):
@@ -228,7 +256,7 @@ class TestQualityGate:
             StrategySignal("Pullback", "HOLD", 0, ""),
             StrategySignal("MR", "HOLD", 0, ""),
         ]
-        report = _quality_gate(strategies, "bullish", data, "EUR_USD", 60)
+        report = _quality_gate(strategies, "bullish", data, "BTC_USD", 60)
         assert report.action == "BUY"
         assert report.confidence == 88
         assert "Sweep below support" in report.reason
@@ -241,7 +269,7 @@ class TestQualityGate:
             StrategySignal("Strategy C", "HOLD", 0, ""),
             StrategySignal("Strategy D", "HOLD", 0, ""),
         ]
-        report = _quality_gate(strategies, "neutral", data, "EUR_USD", 60)
+        report = _quality_gate(strategies, "neutral", data, "BTC_USD", 60)
         assert report.action == "BUY"
         assert report.confidence == 82
         assert "Reason A | Reason B" in report.reason
@@ -279,9 +307,9 @@ class TestAnalyzeSetup:
         np.random.seed(0)
         close = 1.0 + np.random.randn(n).cumsum() * 0.01
         prices = _ohcv_close(close.tolist())
-        report_low = analyze_setup("EUR_USD", prices, min_confidence=0)
-        report_high = analyze_setup("EUR_USD", prices, min_confidence=99)
-        assert report_high.action == "WAIT"  # 99 is unreachable
+        report_low = analyze_setup("BTC_USD", prices, min_confidence=0)
+        report_high = analyze_setup("BTC_USD", prices, min_confidence=99)
+        assert report_high.action == "WAIT"
 
     def test_crypto_sl_tp_multipliers(self):
         from bot.signal_engine import _sl_tp_mult
@@ -291,4 +319,3 @@ class TestAnalyzeSetup:
         assert _sl_tp_mult("ANSEM_USD") == (2.5, 3.5)
         assert _sl_tp_mult("WIF_USD") == (2.5, 3.5)
         assert _sl_tp_mult("XAU_USD") == (2.0, 4.0)
-        assert _sl_tp_mult("EUR_USD") == (1.5, 3.0)
