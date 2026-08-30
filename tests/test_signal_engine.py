@@ -15,8 +15,6 @@ from bot.signal_engine import (
     _fallback_scoring,
     _quality_gate,
     _crypto_momentum_surge,
-    _crypto_rsi_divergence,
-    _crypto_volatility_squeeze,
     _forex_ict_liquidity_sweep,
     _forex_fvg_retest,
     _forex_london_ny_displacement,
@@ -329,39 +327,6 @@ class TestAnalyzeSetup:
         assert _sl_tp_mult("TRUMP_USD") == (3.5, 5.0)
         # Commodities
         assert _sl_tp_mult("XAU_USD") == (2.0, 4.0)
-
-
-class TestCryptoRSIDivergence:
-    def test_non_crypto_returns_hold(self):
-        data = compute_indicators(_ohcv_close([1.0] * 100))
-        sig = _crypto_rsi_divergence(data, "EUR_USD")
-        assert sig.action == "HOLD"
-        assert sig.name == "RSI Divergence"
-
-    def test_crypto_runs(self):
-        data = compute_indicators(_ohcv_close(list(range(1, 101))))
-        sig = _crypto_rsi_divergence(data, "BTC_USD")
-        assert sig.action in ("BUY", "SELL", "HOLD")
-        assert sig.name == "RSI Divergence"
-
-
-class TestCryptoVolatilitySqueeze:
-    def test_non_crypto_returns_hold(self):
-        data = compute_indicators(_ohcv_close([1.0] * 100))
-        sig = _crypto_volatility_squeeze(data, "EUR_USD")
-        assert sig.action == "HOLD"
-        assert sig.name == "Volatility Squeeze"
-
-    def test_crypto_runs(self):
-        data = compute_indicators(_ohcv_close(list(range(1, 101))))
-        sig = _crypto_volatility_squeeze(data, "BTC_USD")
-        assert sig.action in ("BUY", "SELL", "HOLD")
-        assert sig.name == "Volatility Squeeze"
-
-    def test_flat_data_no_squeeze(self):
-        data = compute_indicators(_ohcv_close([1.0] * 100))
-        sig = _crypto_volatility_squeeze(data, "SOL_USD")
-        assert sig.action == "HOLD"
 
 
 class TestMeanReversionCryptoAware:

@@ -609,121 +609,6 @@ def _quality_gate(
     return _make_report(symbol, "WAIT", fallback_conf, trend, close, atr_val, fb_reason, data=data)
 
 
-# ---------------------------------------------------------------------------
-# Strategy 7 — Crypto RSI Divergence (Reversal Signal)
-# ---------------------------------------------------------------------------
-
-def _crypto_rsi_divergence(data: pd.DataFrame, symbol: str) -> StrategySignal:
-    """
-    Detects RSI bullish/bearish divergence — price makes a new extreme
-    but RSI does not confirm, signaling momentum exhaustion.
-    """
-    if symbol not in CRYPTO_SYMBOLS or len(data) < 30:
-        return StrategySignal("RSI Divergence", "HOLD", 0, "")
-
-    last = data.iloc[-1]
-    close = float(last["close"])
-    rsi_now = float(last["rsi"]) if pd.notna(last["rsi"]) else 50
-    ema200 = float(last["ema200"])
-
-    # Look for swing lows/highs in price and RSI over last 20 bars
-    recent = data.iloc[-20:]
-    price_lows = recent["low"]
-    price_highs = recent["high"]
-    rsi_vals = recent["rsi"]
-
-    # Bullish Divergence: Price makes lower low, RSI makes higher low
-    price_low_now = float(price_lows.iloc[-5:].min())
-    price_low_prev = float(price_lows.iloc[:10].min())
-    rsi_at_low_now = float(rsi_vals.iloc[-5:].min())
-    rsi_at_low_prev = float(rsi_vals.iloc[:10].min())
-
-    if (price_low_now < price_low_prev
-            and rsi_at_low_now > rsi_at_low_prev + 3
-            and rsi_now <= 40
-            and close > last["open"]):  # Current candle is green (confirmation)
-        # Extra confidence if near EMA200 support
-        conf = 86 if abs(close - ema200) / max(close, 0.0001) < 0.02 else 80
-        return StrategySignal(
-            "RSI Divergence", "BUY", conf,
-            f"Bullish RSI divergence: price lower low but RSI higher low ({rsi_at_low_prev:.0f} → {rsi_at_low_now:.0f})",
-        )
-
-    # Bearish Divergence: Price makes higher high, RSI makes lower high
-    price_high_now = float(price_highs.iloc[-5:].max())
-    price_high_prev = float(price_highs.iloc[:10].max())
-    rsi_at_high_now = float(rsi_vals.iloc[-5:].max())
-    rsi_at_high_prev = float(rsi_vals.iloc[:10].max())
-
-    if (price_high_now > price_high_prev
-            and rsi_at_high_now < rsi_at_high_prev - 3
-            and rsi_now >= 60
-            and close < last["open"]):  # Current candle is red (confirmation)
-        conf = 86 if abs(close - ema200) / max(close, 0.0001) < 0.02 else 80
-        return StrategySignal(
-            "RSI Divergence", "SELL", conf,
-            f"Bearish RSI divergence: price higher high but RSI lower high ({rsi_at_high_prev:.0f} → {rsi_at_high_now:.0f})",
-        )
-
-    return StrategySignal("RSI Divergence", "HOLD", 0, "")
-
-
-# ---------------------------------------------------------------------------
-# Strategy 8 — Crypto Volatility Squeeze Breakout (Bollinger Band Width)
-# ---------------------------------------------------------------------------
-
-def _crypto_volatility_squeeze(data: pd.DataFrame, symbol: str) -> StrategySignal:
-    """
-    Detects Bollinger Band width contraction (squeeze) followed by an
-    explosive breakout candle — a powerful crypto momentum signal.
-    """
-    if symbol not in CRYPTO_SYMBOLS or len(data) < 35:
-        return StrategySignal("Volatility Squeeze", "HOLD", 0, "")
-
-    last = data.iloc[-1]
-    close = float(last["close"])
-    open_p = float(last["open"])
-
-    # Compute Bollinger Band width over last 30 bars
-    recent = data.iloc[-30:]
-    bb_widths = (recent["upper_band"] - recent["lower_band"]) / recent["sma20"].replace(0, np.nan)
-    bb_widths = bb_widths.dropna()
-
-    if len(bb_widths) < 20:
-        return StrategySignal("Volatility Squeeze", "HOLD", 0, "")
-
-    current_width = float(bb_widths.iloc[-1])
-    min_width_20 = float(bb_widths.iloc[-20:].min())
-    avg_width = float(bb_widths.iloc[-20:].mean())
-
-    # Squeeze condition: current BB width is within 10% of the 20-bar minimum
-    is_squeezed = current_width <= min_width_20 * 1.10 and current_width < avg_width * 0.65
-
-    if not is_squeezed:
-        return StrategySignal("Volatility Squeeze", "HOLD", 0, "")
-
-    body = abs(close - open_p)
-    total_range = float(last["high"] - last["low"])
-    if total_range == 0:
-        return StrategySignal("Volatility Squeeze", "HOLD", 0, "")
-
-    # Bullish squeeze breakout: close above upper band with strong body
-    if close > float(last["upper_band"]) and close > open_p and body >= 0.50 * total_range:
-        return StrategySignal(
-            "Volatility Squeeze", "BUY", 88,
-            f"BB squeeze breakout UP: width at {current_width:.4f} (min {min_width_20:.4f}), explosive expansion",
-        )
-
-    # Bearish squeeze breakout: close below lower band with strong body
-    if close < float(last["lower_band"]) and close < open_p and body >= 0.50 * total_range:
-        return StrategySignal(
-            "Volatility Squeeze", "SELL", 88,
-            f"BB squeeze breakout DOWN: width at {current_width:.4f} (min {min_width_20:.4f}), explosive expansion",
-        )
-
-    return StrategySignal("Volatility Squeeze", "HOLD", 0, "")
-
-
 def _analyze_crypto_setup(
     symbol: str,
     data: pd.DataFrame,
@@ -738,8 +623,6 @@ def _analyze_crypto_setup(
         _mean_reversion(data, symbol),
         _crypto_momentum_surge(data, symbol),
         _news_catalyst_momentum(data, symbol),
-        _crypto_rsi_divergence(data, symbol),
-        _crypto_volatility_squeeze(data, symbol),
     ]
     return _quality_gate(strategies, bias, data, symbol, min_confidence)
 
