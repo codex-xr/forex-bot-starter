@@ -45,9 +45,51 @@ COMMANDS = {
 }
 
 
-USER_HELP_TEXT = """🔥 <b>Forex, Crypto & Memecoin Signal Bot</b>
+def get_menu_keyboard(is_admin_user: bool = False) -> dict:
+    """Builds interactive Telegram inline buttons for instant 1-tap commands."""
+    keyboard = [
+        [
+            {"text": "📈 Forex Majors (/f1)", "callback_data": "/f1"},
+            {"text": "🏆 Gold & Crosses (/f2)", "callback_data": "/f2"},
+        ],
+        [
+            {"text": "🚀 Major Cryptos (/c1)", "callback_data": "/c1"},
+            {"text": "⚡ Hot Altcoins (/c2)", "callback_data": "/c2"},
+        ],
+        [
+            {"text": "🐶 Top Memes (/m1)", "callback_data": "/m1"},
+            {"text": "🐸 Trending Memes (/m2)", "callback_data": "/m2"},
+        ],
+        [
+            {"text": "📰 Breaking News", "callback_data": "/news"},
+            {"text": "🤖 Auto-Pilot", "callback_data": "/autopilot"},
+        ],
+        [
+            {"text": "ℹ️ My Subscription", "callback_data": "/myplan"},
+            {"text": "📊 Bot Health", "callback_data": "/status"},
+        ],
+    ]
+    if is_admin_user:
+        keyboard.append([
+            {"text": "👥 User Dashboard", "callback_data": "/users"},
+            {"text": "🔑 VIP Keys", "callback_data": "/keys"},
+        ])
+        keyboard.append([
+            {"text": "⏰ Schedules", "callback_data": "/schedules"},
+            {"text": "❓ Full Help Menu", "callback_data": "/help"},
+        ])
+    else:
+        keyboard.append([
+            {"text": "❓ Full Help Menu", "callback_data": "/help"},
+        ])
+    return {"inline_keyboard": keyboard}
 
-📈 <b>Forex & Commodities Scans:</b>
+
+USER_HELP_TEXT = """🔥 <b>Forex, Crypto & Memecoin Signal Dashboard</b>
+
+Tap any button below or type a command to scan the market:
+
+📈 <b>Forex & Commodities:</b>
 • <code>/f1</code> — Forex Majors (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD)
 • <code>/f2</code> — Crosses & Gold (NZDUSD, EURGBP, EURJPY, GBPJPY, Gold, US30)
 
@@ -67,10 +109,11 @@ USER_HELP_TEXT = """🔥 <b>Forex, Crypto & Memecoin Signal Bot</b>
 • <code>/autopilot on</code> — Activate 24/7 background signal hunting
 • <code>/autopilot off</code> — Pause background monitoring
 
-ℹ️ <b>Account:</b>
+ℹ️ <b>Account & Setup:</b>
+• <code>/menu</code> — Show Interactive Button Menu
 • <code>/myplan</code> — View your VIP subscription status
 • <code>/status</code> — Bot Health & Active Status
-• <code>/help</code> — Show this menu
+• <code>/help</code> — Show this full guide
 """
 
 ADMIN_HELP_TEXT = USER_HELP_TEXT + """
@@ -105,6 +148,31 @@ Activate your account instantly with:
 """
 
 
+def handle_callback_query(callback_query: dict) -> None:
+    """Handles button clicks from inline Telegram keyboards."""
+    query_id = callback_query.get("id")
+    chat_id = callback_query.get("message", {}).get("chat", {}).get("id")
+    user_info = callback_query.get("from", {})
+    data = (callback_query.get("data") or "").strip()
+
+    if query_id:
+        try:
+            telegram_request("answerCallbackQuery", {"callback_query_id": query_id})
+        except Exception as exc:
+            print(f"[CallbackQuery] Ack error: {exc}")
+
+    if not chat_id or not data:
+        return
+
+    # Route button action as standard command message
+    synthetic_msg = {
+        "chat": {"id": chat_id},
+        "from": user_info,
+        "text": data,
+    }
+    handle_message(synthetic_msg)
+
+
 def handle_message(message: dict) -> None:
     # Process any due scheduled broadcasts
     try:
@@ -130,12 +198,21 @@ def handle_message(message: dict) -> None:
         # -------------------------------------------------------------
         # 1. Public Account & Help Commands (Always Accessible)
         # -------------------------------------------------------------
-        if command in {"/start", "/help"}:
+        if command in {"/start", "/help", "/menu", "/commands", "/cmds"}:
             is_auth, _ = is_user_authorized(chat_id, user_info)
-            if is_admin(chat_id):
-                send_telegram_message(ADMIN_HELP_TEXT, chat_id=chat_id)
+            admin_flag = is_admin(chat_id)
+            if admin_flag:
+                send_telegram_message(
+                    ADMIN_HELP_TEXT,
+                    chat_id=chat_id,
+                    reply_markup=get_menu_keyboard(is_admin_user=True),
+                )
             elif is_auth:
-                send_telegram_message(USER_HELP_TEXT, chat_id=chat_id)
+                send_telegram_message(
+                    USER_HELP_TEXT,
+                    chat_id=chat_id,
+                    reply_markup=get_menu_keyboard(is_admin_user=False),
+                )
             else:
                 send_telegram_message(UNAUTHORIZED_HELP_TEXT, chat_id=chat_id)
             return
@@ -376,6 +453,8 @@ def main() -> None:
                 offset = update["update_id"] + 1
                 if "message" in update:
                     handle_message(update["message"])
+                elif "callback_query" in update:
+                    handle_callback_query(update["callback_query"])
 
         except Exception as exc:
             print(f"Polling error: {exc}")

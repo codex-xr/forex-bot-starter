@@ -12,12 +12,14 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 try:
-    from bot.telegram_commands import handle_message
+    from bot.telegram_commands import handle_message, handle_callback_query
     from bot.autopilot import autopilot
     from bot.session_bot import ALL_WATCHLIST
+    from bot.telegram import register_telegram_commands
 except Exception as import_err:
     print(f"[Vercel Startup Error]: {import_err}")
     handle_message = None
+    handle_callback_query = None
     autopilot = None
     ALL_WATCHLIST = []
     _IMPORT_ERROR = traceback.format_exc()
@@ -32,8 +34,10 @@ class handler(BaseHTTPRequestHandler):
 
         try:
             update = json.loads(post_data.decode("utf-8"))
-            if "message" in update:
+            if "message" in update and handle_message:
                 handle_message(update["message"])
+            elif "callback_query" in update and handle_callback_query:
+                handle_callback_query(update["callback_query"])
         except Exception as exc:
             print(f"[Vercel Webhook] Error: {exc}")
 
@@ -65,16 +69,19 @@ class handler(BaseHTTPRequestHandler):
                     json={"url": webhook_url},
                     timeout=15,
                 ).json()
+                cmds_res = register_telegram_commands()
             except Exception as exc:
                 tg_res = {"error": str(exc)}
+                cmds_res = {"error": str(exc)}
 
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({
-                "message": "Webhook setup attempted",
+                "message": "Webhook & Menu Commands setup attempted",
                 "registered_url": webhook_url,
-                "telegram_response": tg_res,
+                "telegram_webhook_response": tg_res,
+                "telegram_commands_response": cmds_res,
             }, indent=2).encode("utf-8"))
             return
 
