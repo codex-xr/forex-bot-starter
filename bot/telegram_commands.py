@@ -127,10 +127,7 @@ def handle_message(message: dict) -> None:
         if command == "/redeem":
             if not subcmd:
                 send_telegram_message(
-                    "⚠️ Please provide an activation key.
-
-Usage: <code>/redeem &lt;YOUR_KEY&gt;</code>
-Example: <code>/redeem VIP-A1B2-30D</code>",
+                    "⚠️ Please provide an activation key.\n\nUsage: <code>/redeem &lt;YOUR_KEY&gt;</code>\nExample: <code>/redeem VIP-A1B2-30D</code>",
                     chat_id=chat_id,
                 )
                 return
@@ -155,16 +152,10 @@ Example: <code>/redeem VIP-A1B2-30D</code>",
                 note = " ".join(parts[2:]) if len(parts) > 2 else ""
                 key_code, label = generate_key(dur, note)
                 msg = (
-                    f"🔑 <b>New VIP Activation Key Generated!</b>
-
-"
-                    f"• <b>Key:</b> <code>{key_code}</code>
-"
-                    f"• <b>Duration:</b> <b>{label}</b>
-
-"
-                    f"<i>Send this key to your user. They can activate it with:</i>
-"
+                    f"🔑 <b>New VIP Activation Key Generated!</b>\n\n"
+                    f"• <b>Key:</b> <code>{key_code}</code>\n"
+                    f"• <b>Duration:</b> <b>{label}</b>\n\n"
+                    f"<i>Send this key to your user. They can activate it with:</i>\n"
                     f"<code>/redeem {key_code}</code>"
                 )
                 send_telegram_message(msg, chat_id=chat_id)
@@ -180,9 +171,7 @@ Example: <code>/redeem VIP-A1B2-30D</code>",
 
             if command in {"/revoke", "/ban"}:
                 if not subcmd:
-                    send_telegram_message("⚠️ Please specify user ID or username to revoke.
-
-Usage: <code>/revoke &lt;user_id or @username&gt;</code>", chat_id=chat_id)
+                    send_telegram_message("⚠️ Please specify user ID or username to revoke.\n\nUsage: <code>/revoke &lt;user_id or @username&gt;</code>", chat_id=chat_id)
                     return
                 ok, msg = revoke_user(subcmd)
                 send_telegram_message(msg, chat_id=chat_id)
@@ -190,8 +179,7 @@ Usage: <code>/revoke &lt;user_id or @username&gt;</code>", chat_id=chat_id)
 
             if command == "/grant":
                 if not subcmd:
-                    send_telegram_message("⚠️ Usage: <code>/grant &lt;user_id or @username&gt; [duration]</code>
-Example: <code>/grant 123456789 30d</code>", chat_id=chat_id)
+                    send_telegram_message("⚠️ Usage: <code>/grant &lt;user_id or @username&gt; [duration]</code>\nExample: <code>/grant 123456789 30d</code>", chat_id=chat_id)
                     return
                 dur = parts[2] if len(parts) > 2 else "30d"
                 ok, msg = grant_user(subcmd, dur)
@@ -202,9 +190,7 @@ Example: <code>/grant 123456789 30d</code>", chat_id=chat_id)
                 if len(parts) < 2:
                     send_telegram_message("⚠️ Usage: <code>/broadcast &lt;message text&gt;</code>", chat_id=chat_id)
                     return
-                broadcast_text = "📢 <b>ADMIN ANNOUNCEMENT</b>
-
-" + raw_text[len(parts[0]):].strip()
+                broadcast_text = "📢 <b>ADMIN ANNOUNCEMENT</b>\n\n" + raw_text[len(parts[0]):].strip()
                 active_ids = get_all_active_chat_ids()
                 sent_count = 0
                 for cid in active_ids:
@@ -228,17 +214,10 @@ Example: <code>/grant 123456789 30d</code>", chat_id=chat_id)
                 send_telegram_message("⏳ <b>Subscription Expired:</b> Your VIP access has expired. Please redeem a new key with <code>/redeem &lt;KEY&gt;</code> or contact the Admin.", chat_id=chat_id)
             else:
                 send_telegram_message(
-                    "🔒 <b>Access Restricted</b>
-
-"
-                    "You need an active VIP activation key to use this bot.
-
-"
-                    "To activate access, use:
-"
-                    "👉 <code>/redeem &lt;YOUR_KEY&gt;</code>
-
-"
+                    "🔒 <b>Access Restricted</b>\n\n"
+                    "You need an active VIP activation key to use this bot.\n\n"
+                    "To activate access, use:\n"
+                    "👉 <code>/redeem &lt;YOUR_KEY&gt;</code>\n\n"
                     "<i>To obtain a key, please contact the Administrator.</i>",
                     chat_id=chat_id,
                 )
@@ -257,9 +236,7 @@ Example: <code>/grant 123456789 30d</code>", chat_id=chat_id)
             if command == "/autopilot_on" or subcmd.lower() == "on":
                 autopilot.resume()
                 send_telegram_message(
-                    "🟢 <b>Auto-Pilot Activated!</b>
-
-"
+                    "🟢 <b>Auto-Pilot Activated!</b>\n\n"
                     "Hunting 24/7 for single-pair trade setups (65% minimum confidence). "
                     "When a setup triggers, you'll receive a direct single-trade alert.",
                     chat_id=chat_id,
@@ -268,9 +245,7 @@ Example: <code>/grant 123456789 30d</code>", chat_id=chat_id)
             elif command == "/autopilot_off" or subcmd.lower() == "off":
                 autopilot.stop()
                 send_telegram_message(
-                    "🔴 <b>Auto-Pilot Paused.</b>
-
-Background scanning is suspended. Send <code>/autopilot on</code> to resume.",
+                    "🔴 <b>Auto-Pilot Paused.</b>\n\nBackground scanning is suspended. Send <code>/autopilot on</code> to resume.",
                     chat_id=chat_id,
                 )
                 return
@@ -281,13 +256,9 @@ Background scanning is suspended. Send <code>/autopilot on</code> to resume.",
         if command == "/status":
             auto_state = "🟢 ACTIVE" if autopilot.is_active else "🔴 PAUSED"
             send_telegram_message(
-                f"✅ <b>Bot Online & Active</b>
-
-"
-                f"• <b>Commands:</b> <code>/f1</code>, <code>/f2</code>, <code>/c1</code>, <code>/c2</code>, <code>/m1</code>, <code>/m2</code>
-"
-                f"• <b>Auto-Pilot:</b> {auto_state} (65% Gate)
-"
+                f"✅ <b>Bot Online & Active</b>\n\n"
+                f"• <b>Commands:</b> <code>/f1</code>, <code>/f2</code>, <code>/c1</code>, <code>/c2</code>, <code>/m1</code>, <code>/m2</code>\n"
+                f"• <b>Auto-Pilot:</b> {auto_state} (65% Gate)\n"
                 f"• <b>DEX Streamer:</b> Solana ($ANSEM) connected",
                 chat_id=chat_id,
             )
