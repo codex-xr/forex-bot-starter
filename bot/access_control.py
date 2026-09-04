@@ -10,11 +10,6 @@ load_dotenv()
 
 ADMIN_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", "6686703329"))
 
-# Path to persistent access store
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-ACCESS_STORE_FILE = DATA_DIR / "access_store.json"
-
 # In-memory cache
 _STORE: dict = {
     "keys": {},
@@ -23,38 +18,47 @@ _STORE: dict = {
 
 
 def _get_store_path() -> Path:
-    # On serverless (Vercel), use /tmp if root is read-only
-    if not os.access(str(DATA_DIR), os.W_OK):
+    # On serverless (Vercel/AWS Lambda), root is read-only; use /tmp
+    try:
+        data_dir = Path("data")
+        data_dir.mkdir(parents=True, exist_ok=True)
+        test_file = data_dir / ".write_test"
+        test_file.touch()
+        test_file.unlink()
+        return data_dir / "access_store.json"
+    except (OSError, PermissionError):
         tmp_dir = Path("/tmp/forex_bot_data")
         tmp_dir.mkdir(parents=True, exist_ok=True)
         return tmp_dir / "access_store.json"
-    return ACCESS_STORE_FILE
 
 
 def _load_store() -> dict:
     global _STORE
-    path = _get_store_path()
-    if path.exists():
-        try:
+    try:
+        path = _get_store_path()
+        if path.exists():
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 _STORE["keys"] = data.get("keys", {})
                 _STORE["users"] = data.get("users", {})
-        except Exception as exc:
-            print(f"[AccessControl] Error loading store: {exc}")
+    except Exception as exc:
+        print(f"[AccessControl] Error loading store: {exc}")
     return _STORE
 
 
 def _save_store() -> None:
-    path = _get_store_path()
     try:
+        path = _get_store_path()
         with open(path, "w", encoding="utf-8") as f:
             json.dump(_STORE, f, indent=2)
     except Exception as exc:
         print(f"[AccessControl] Error saving store: {exc}")
 
 
-_load_store()
+try:
+    _load_store()
+except Exception:
+    pass
 
 
 def is_admin(chat_id: int | str) -> bool:
