@@ -6,6 +6,7 @@ import html
 import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -18,6 +19,9 @@ _STORE: dict = {
     "users": {},
     "schedules": {},
 }
+
+_LOADED = False
+_LAST_SYNC_TS = 0.0
 
 
 def _get_store_path() -> Path:
@@ -35,13 +39,72 @@ def _get_store_path() -> Path:
         return tmp_dir / "access_store.json"
 
 
-_LOADED = False
+def _load_from_cloud() -> dict | None:
+    url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+    token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+    if not url or not token:
+        return None
+    try:
+        headers = {"Authorization": f"Bearer {token}"}
+        res = requests.get(f"{url}/get/access_store_data", headers=headers, timeout=4)
+        if res.status_code == 200:
+            val = res.json().get("result")
+            if val:
+                if isinstance(val, str):
+                    return json.loads(val)
+                elif isinstance(val, dict):
+                    return val
+        return None
+    except Exception as exc:
+        print(f"[AccessControl] Upstash load error: {exc}")
+        return None
+
+
+def _save_to_cloud(data: dict) -> bool:
+    url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+    token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+    if not url or not token:
+        return False
+    try:
+        headers = {"Authorization": f"Bearer {token}"}
+        res = requests.post(
+            url,
+            headers=headers,
+            json=["SET", "access_store_data", json.dumps(data)],
+            timeout=4,
+        )
+        return res.status_code == 200
+    except Exception as exc:
+        print(f"[AccessControl] Upstash save error: {exc}")
+        return False
 
 
 def _load_store(force: bool = False) -> dict:
-    global _STORE, _LOADED
-    if _LOADED and not force:
+    global _STORE, _LOADED, _LAST_SYNC_TS
+    now = time.time()
+    if _LOADED and not force and (now - _LAST_SYNC_TS < 5.0):
         return _STORE
+
+    # Try cloud first
+    cloud_data = None
+    if not os.getenv("PYTEST_CURRENT_TEST"):
+        cloud_data = _load_from_cloud()
+
+    if cloud_data and isinstance(cloud_data, dict):
+        _STORE["keys"] = cloud_data.get("keys", {})
+        _STORE["users"] = cloud_data.get("users", {})
+        _STORE["schedules"] = cloud_data.get("schedules", {})
+        _LOADED = True
+        _LAST_SYNC_TS = now
+        try:
+            path = _get_store_path()
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(_STORE, f, indent=2)
+        except Exception:
+            pass
+        return _STORE
+
+    # Fallback to local file
     try:
         path = _get_store_path()
         if path.exists():
@@ -51,18 +114,26 @@ def _load_store(force: bool = False) -> dict:
                 _STORE["users"] = data.get("users", {})
                 _STORE["schedules"] = data.get("schedules", {})
         _LOADED = True
+        _LAST_SYNC_TS = now
     except Exception as exc:
         print(f"[AccessControl] Error loading store: {exc}")
     return _STORE
 
 
 def _save_store() -> None:
+    global _STORE, _LAST_SYNC_TS
+    _LAST_SYNC_TS = time.time()
+    # 1. Save locally
     try:
         path = _get_store_path()
         with open(path, "w", encoding="utf-8") as f:
             json.dump(_STORE, f, indent=2)
     except Exception as exc:
         print(f"[AccessControl] Error saving store: {exc}")
+
+    # 2. Save to cloud
+    if not os.getenv("PYTEST_CURRENT_TEST"):
+        _save_to_cloud(_STORE)
 
 
 try:
@@ -115,6 +186,7 @@ def generate_key(duration_str: str = "30d", note: str = "") -> tuple[str, str]:
     Generates a unique VIP key and saves it to the store.
     Returns (key_code, duration_label).
     """
+    _load_store()
     days, label = parse_duration(duration_str)
     random_part = secrets.token_hex(3).upper()
     dur_tag = f"{days}D" if days else "LIFE"

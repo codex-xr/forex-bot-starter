@@ -1,6 +1,6 @@
 import time
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from bot.access_control import (
     ADMIN_CHAT_ID,
     is_admin,
@@ -18,6 +18,8 @@ from bot.access_control import (
     cancel_schedule,
     list_schedules_report,
     process_due_broadcasts,
+    _load_from_cloud,
+    _save_to_cloud,
     _STORE,
 )
 
@@ -282,3 +284,38 @@ class TestReports:
         rep = get_user_plan_report(4321)
         assert "VIP Account Active" in rep
         assert "30 Days" in rep
+
+
+class TestCloudPersistence:
+    @patch.dict("os.environ", {"UPSTASH_REDIS_REST_URL": "https://test-redis.upstash.io", "UPSTASH_REDIS_REST_TOKEN": "test_token"})
+    @patch("requests.get")
+    def test_load_from_cloud_success(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "result": '{"keys": {"VIP-123": {"status": "unused"}}, "users": {"999": {"status": "active"}}, "schedules": {}}'
+        }
+        mock_get.return_value = mock_resp
+
+        data = _load_from_cloud()
+        assert data is not None
+        assert "VIP-123" in data["keys"]
+        assert "999" in data["users"]
+
+    @patch.dict("os.environ", {"UPSTASH_REDIS_REST_URL": "https://test-redis.upstash.io", "UPSTASH_REDIS_REST_TOKEN": "test_token"})
+    @patch("requests.post")
+    def test_save_to_cloud_success(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_post.return_value = mock_resp
+
+        dummy_store = {"keys": {}, "users": {}, "schedules": {}}
+        success = _save_to_cloud(dummy_store)
+        assert success is True
+        assert mock_post.called
+
+    @patch.dict("os.environ", {"UPSTASH_REDIS_REST_URL": "", "UPSTASH_REDIS_REST_TOKEN": ""})
+    def test_cloud_skipped_when_env_missing(self):
+        assert _load_from_cloud() is None
+        assert _save_to_cloud({"test": 1}) is False
+
