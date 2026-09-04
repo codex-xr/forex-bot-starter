@@ -71,18 +71,45 @@ def get_menu_keyboard(is_admin_user: bool = False) -> dict:
     ]
     if is_admin_user:
         keyboard.append([
-            {"text": "👥 User Dashboard", "callback_data": "/users"},
-            {"text": "🔑 VIP Keys", "callback_data": "/keys"},
+            {"text": "👑 Master Admin Panel (/admin)", "callback_data": "/admin"},
         ])
         keyboard.append([
-            {"text": "⏰ Schedules", "callback_data": "/schedules"},
-            {"text": "❓ Full Help Menu", "callback_data": "/help"},
+            {"text": "👥 User Dashboard", "callback_data": "/users"},
+            {"text": "🔑 VIP Keys", "callback_data": "/keys"},
         ])
     else:
         keyboard.append([
             {"text": "❓ Full Help Menu", "callback_data": "/help"},
         ])
     return {"inline_keyboard": keyboard}
+
+
+def get_admin_keyboard() -> dict:
+    """Dedicated Admin Control Panel buttons."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "👥 User Dashboard (/users)", "callback_data": "/users"},
+                {"text": "🔑 VIP Keys (/keys)", "callback_data": "/keys"},
+            ],
+            [
+                {"text": "⏰ Active Schedules (/schedules)", "callback_data": "/schedules"},
+                {"text": "📊 Bot Health (/status)", "callback_data": "/status"},
+            ],
+            [
+                {"text": "📈 Forex Scan (/f1)", "callback_data": "/f1"},
+                {"text": "🚀 Crypto Scan (/c1)", "callback_data": "/c1"},
+            ],
+            [
+                {"text": "🐶 Meme Scan (/m1)", "callback_data": "/m1"},
+                {"text": "📰 Breaking News (/news)", "callback_data": "/news"},
+            ],
+            [
+                {"text": "📱 User Menu (/menu)", "callback_data": "/menu"},
+                {"text": "❓ Help Guide (/help)", "callback_data": "/help"},
+            ],
+        ]
+    }
 
 
 USER_HELP_TEXT = """🔥 <b>Forex, Crypto & Memecoin Signal Dashboard</b>
@@ -117,7 +144,8 @@ Tap any button below or type a command to scan the market:
 """
 
 ADMIN_HELP_TEXT = USER_HELP_TEXT + """
-👑 <b>Admin Control Panel:</b>
+👑 <b>Master Admin Control Panel:</b>
+• <code>/admin</code> — Open Admin Interactive Dashboard
 • <code>/genkey &lt;duration&gt;</code> — Generate VIP Key (e.g. <code>/genkey 30d</code>, <code>/genkey lifetime</code>)
 • <code>/users</code> — View all registered users, visitors & stats
 • <code>/revoke &lt;user_id&gt;</code> — Terminate/ban a user's access
@@ -200,7 +228,7 @@ def handle_message(message: dict) -> None:
         # -------------------------------------------------------------
         if command in {"/start", "/help", "/menu", "/commands", "/cmds"}:
             is_auth, _ = is_user_authorized(chat_id, user_info)
-            admin_flag = is_admin(chat_id)
+            admin_flag = is_admin(chat_id) or (user_info and is_admin(user_info.get("id")))
             if admin_flag:
                 send_telegram_message(
                     ADMIN_HELP_TEXT,
@@ -236,12 +264,33 @@ def handle_message(message: dict) -> None:
         # 2. Admin Only Commands
         # -------------------------------------------------------------
         if command in {
-            "/genkey", "/users", "/subscribers", "/members", "/revoke", "/ban",
+            "/admin", "/genkey", "/users", "/subscribers", "/members", "/revoke", "/ban",
             "/unban", "/restore", "/grant", "/keys", "/broadcast",
             "/schedule", "/schedules", "/cancelschedule", "/delschedule", "/unschedule"
         }:
-            if not is_admin(chat_id):
-                send_telegram_message("🚫 <b>Access Denied:</b> This command is reserved for the Administrator.", chat_id=chat_id)
+            admin_flag = is_admin(chat_id) or (user_info and is_admin(user_info.get("id")))
+            if not admin_flag:
+                send_telegram_message("🚫 <b>Access Denied:</b> This command is reserved for the Master Administrator.", chat_id=chat_id)
+                return
+
+            if command == "/admin":
+                admin_msg = (
+                    "👑 <b>Master Administrator Control Panel</b>\n\n"
+                    "• <b>Status:</b> 🟢 Online (Cloud Database Connected)\n"
+                    "• <b>Access:</b> Full Admin Authorization\n\n"
+                    "<b>Admin Controls:</b>\n"
+                    "• <code>/users</code> — View all registered users & visitors\n"
+                    "• <code>/genkey &lt;dur&gt;</code> — Generate VIP Key (e.g. <code>/genkey 30d</code>)\n"
+                    "• <code>/grant &lt;id&gt; &lt;dur&gt;</code> — Direct VIP Grant\n"
+                    "• <code>/revoke &lt;id&gt;</code> — Ban / Terminate User Access\n"
+                    "• <code>/unban &lt;id&gt;</code> — Restore User Access\n"
+                    "• <code>/keys</code> — View Available & Redeemed Keys\n"
+                    "• <code>/broadcast &lt;msg&gt;</code> — Send Announcement to All\n"
+                    "• <code>/schedule &lt;timing&gt; &lt;msg&gt;</code> — Schedule Announcement\n"
+                    "• <code>/schedules</code> — View Active Schedules\n"
+                    "• <code>/cancelschedule &lt;id&gt;</code> — Cancel Scheduled Alert"
+                )
+                send_telegram_message(admin_msg, chat_id=chat_id, reply_markup=get_admin_keyboard())
                 return
 
             if command == "/genkey":

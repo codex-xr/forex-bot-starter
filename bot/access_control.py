@@ -150,10 +150,18 @@ def _clean_target(target: str) -> str:
     return t
 
 
-def is_admin(chat_id: int | str) -> bool:
+def is_admin(chat_id: int | str | None) -> bool:
+    if chat_id is None:
+        return False
     try:
         clean_id = _clean_target(str(chat_id))
-        return int(clean_id) == ADMIN_CHAT_ID
+        if not clean_id or not clean_id.lstrip("-").isdigit():
+            return False
+        admin_env = os.getenv("TELEGRAM_CHAT_ID", "6686703329").strip().strip("<>\"'")
+        admin_ids = [int(_clean_target(x)) for x in admin_env.split(",") if _clean_target(x).isdigit()]
+        if not admin_ids:
+            admin_ids = [6686703329]
+        return int(clean_id) in admin_ids
     except (ValueError, TypeError):
         return False
 
@@ -272,7 +280,9 @@ def is_user_authorized(chat_id: int | str, user_info: dict | None = None) -> tup
     logs ALL visitors into the user database for tracking.
     """
     clean_id = _clean_target(str(chat_id))
-    if is_admin(clean_id):
+    from_id = _clean_target(str(user_info.get("id"))) if user_info and user_info.get("id") else ""
+
+    if is_admin(clean_id) or (from_id and is_admin(from_id)):
         return True, "Admin"
 
     _load_store()

@@ -51,11 +51,12 @@ def send_telegram_message(
 
 def register_telegram_commands() -> dict:
     """
-    Registers the command list with Telegram so users see the interactive
-    Menu button in the chat interface.
+    Registers command lists with Telegram:
+    - Default scope (regular users): signal scanning, account, help commands only.
+    - Admin scope (admin chat): full admin suite + signal scanning commands.
     """
-    commands = [
-        {"command": "menu", "description": "📱 Interactive Control Panel & Signal Scanner"},
+    user_commands = [
+        {"command": "menu", "description": "📱 Interactive Signal Dashboard"},
         {"command": "f1", "description": "📈 Forex Majors (EUR, GBP, JPY, CAD...)"},
         {"command": "f2", "description": "🏆 Crosses, Gold (XAU) & US30"},
         {"command": "c1", "description": "🚀 Major Cryptos (BTC, ETH, SOL, XRP...)"},
@@ -68,9 +69,46 @@ def register_telegram_commands() -> dict:
         {"command": "redeem", "description": "🔑 Activate VIP Key (/redeem KEY)"},
         {"command": "help", "description": "❓ Show Full Help & Command Guide"},
     ]
+
+    admin_commands = [
+        {"command": "admin", "description": "👑 Master Admin Control Panel"},
+        {"command": "menu", "description": "📱 Interactive Signal Dashboard"},
+        {"command": "users", "description": "👥 User Dashboard & Access Tracker"},
+        {"command": "genkey", "description": "🔑 Generate VIP Key (/genkey 30d)"},
+        {"command": "grant", "description": "🎁 Direct VIP Grant (/grant id 30d)"},
+        {"command": "revoke", "description": "🚫 Revoke/Ban User Access"},
+        {"command": "unban", "description": "✅ Restore/Unban User Access"},
+        {"command": "keys", "description": "🗝️ View Available & Redeemed Keys"},
+        {"command": "broadcast", "description": "📢 Instant Announcement to All"},
+        {"command": "schedule", "description": "⏰ Schedule Broadcast Alert"},
+        {"command": "schedules", "description": "📋 View Active Schedules"},
+        {"command": "f1", "description": "📈 Forex Majors Scan"},
+        {"command": "c1", "description": "🚀 Major Cryptos Scan"},
+        {"command": "m1", "description": "🐶 Top Memes Scan"},
+        {"command": "news", "description": "📰 Breaking Catalysts & News"},
+        {"command": "autopilot", "description": "🤖 Auto-Pilot 24/7 Status"},
+        {"command": "status", "description": "📊 Bot Health Status"},
+        {"command": "help", "description": "❓ Show Full Help & Command Guide"},
+    ]
+
+    res = {}
     try:
-        return telegram_request("setMyCommands", {"commands": commands})
+        res["default"] = telegram_request("setMyCommands", {"commands": user_commands, "scope": {"type": "default"}})
     except Exception as exc:
-        print(f"[Telegram] Failed to set bot commands: {exc}")
-        return {"error": str(exc)}
+        res["default_error"] = str(exc)
+
+    admin_env = os.getenv("TELEGRAM_CHAT_ID", "6686703329").strip().strip("<>\"'")
+    for aid in admin_env.split(","):
+        clean_aid = aid.strip()
+        if clean_aid.isdigit():
+            try:
+                res[f"admin_{clean_aid}"] = telegram_request(
+                    "setMyCommands",
+                    {"commands": admin_commands, "scope": {"type": "chat", "chat_id": int(clean_aid)}},
+                )
+            except Exception as exc:
+                res[f"admin_{clean_aid}_error"] = str(exc)
+
+    return res
+
 
