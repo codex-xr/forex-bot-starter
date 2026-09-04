@@ -79,10 +79,19 @@ class handler(BaseHTTPRequestHandler):
             return
 
         if path.endswith("/cron"):
+            # 1. Process any due scheduled broadcasts
+            executed_broadcasts = []
+            try:
+                from bot.access_control import process_due_broadcasts
+                executed_broadcasts = process_due_broadcasts()
+            except Exception as exc:
+                print(f"[Cron Broadcast] Error: {exc}")
+
+            # 2. Run autopilot symbol scans
             alerts = []
             for symbol in ALL_WATCHLIST:
                 try:
-                    if autopilot.scan_single_symbol(symbol):
+                    if autopilot and autopilot.scan_single_symbol(symbol):
                         alerts.append(symbol)
                 except Exception as exc:
                     print(f"[Cron Scan] Error on {symbol}: {exc}")
@@ -94,6 +103,7 @@ class handler(BaseHTTPRequestHandler):
                 "status": "success",
                 "symbols_scanned": len(ALL_WATCHLIST),
                 "alerts_triggered": alerts,
+                "broadcasts_executed": executed_broadcasts,
             }, indent=2).encode("utf-8"))
             return
 

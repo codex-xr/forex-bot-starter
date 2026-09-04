@@ -17,6 +17,10 @@ from bot.access_control import (
     list_keys_report,
     get_user_plan_report,
     get_all_active_chat_ids,
+    create_scheduled_broadcast,
+    cancel_schedule,
+    list_schedules_report,
+    process_due_broadcasts,
 )
 from bot.autopilot import autopilot
 from bot.news_engine import format_news_summary
@@ -71,13 +75,16 @@ USER_HELP_TEXT = """🔥 <b>Forex, Crypto & Memecoin Signal Bot</b>
 
 ADMIN_HELP_TEXT = USER_HELP_TEXT + """
 👑 <b>Admin Control Panel:</b>
-• <code>/genkey &lt;duration&gt;</code> — Generate VIP Key (e.g. <code>/genkey 30d</code>, <code>/genkey 7d</code>, <code>/genkey lifetime</code>)
-• <code>/users</code> — View all registered users, plans & stats
+• <code>/genkey &lt;duration&gt;</code> — Generate VIP Key (e.g. <code>/genkey 30d</code>, <code>/genkey lifetime</code>)
+• <code>/users</code> — View all registered users, visitors & stats
 • <code>/revoke &lt;user_id&gt;</code> — Terminate/ban a user's access
 • <code>/unban &lt;user_id&gt;</code> — Restore an account / unban a user
 • <code>/grant &lt;user_id&gt; &lt;duration&gt;</code> — Directly grant access without key
 • <code>/keys</code> — View available & redeemed keys
-• <code>/broadcast &lt;message&gt;</code> — Send announcement to all active users
+• <code>/broadcast &lt;message&gt;</code> — Send instant announcement to all users
+• <code>/schedule &lt;timing&gt; &lt;message&gt;</code> — Schedule one-time or recurring broadcast
+• <code>/schedules</code> — View all active scheduled broadcasts
+• <code>/cancelschedule &lt;id&gt;</code> — Cancel a scheduled broadcast
 """
 
 UNAUTHORIZED_HELP_TEXT = """🔒 <b>Forex, Crypto & Memecoin Signal Bot</b>
@@ -99,6 +106,12 @@ Activate your account instantly with:
 
 
 def handle_message(message: dict) -> None:
+    # Process any due scheduled broadcasts
+    try:
+        process_due_broadcasts()
+    except Exception as sched_err:
+        print(f"[ScheduledBroadcast] Process error: {sched_err}")
+
     chat_id = message.get("chat", {}).get("id")
     user_info = message.get("from", {})
     raw_text = (message.get("text") or "").strip()
@@ -145,7 +158,11 @@ def handle_message(message: dict) -> None:
         # -------------------------------------------------------------
         # 2. Admin Only Commands
         # -------------------------------------------------------------
-        if command in {"/genkey", "/users", "/revoke", "/ban", "/unban", "/restore", "/grant", "/keys", "/broadcast"}:
+        if command in {
+            "/genkey", "/users", "/subscribers", "/members", "/revoke", "/ban",
+            "/unban", "/restore", "/grant", "/keys", "/broadcast",
+            "/schedule", "/schedules", "/cancelschedule", "/delschedule", "/unschedule"
+        }:
             if not is_admin(chat_id):
                 send_telegram_message("🚫 <b>Access Denied:</b> This command is reserved for the Administrator.", chat_id=chat_id)
                 return
@@ -215,10 +232,51 @@ def handle_message(message: dict) -> None:
                     try:
                         send_telegram_message(broadcast_text, chat_id=cid)
                         sent_count += 1
-                        time.sleep(0.05)
+                        time.sleep(0.04)
                     except Exception as e:
                         print(f"Failed broadcast to {cid}: {e}")
                 send_telegram_message(f"✅ Broadcast sent to <b>{sent_count}</b> users.", chat_id=chat_id)
+                return
+
+            if command == "/schedule":
+                if len(parts) < 3:
+                    send_telegram_message(
+                        "⚠️ <b>Usage:</b> <code>/schedule &lt;timing&gt; &lt;message&gt;</code>\n\n"
+                        "<b>Examples:</b>\n"
+                        "• One-time: <code>/schedule in 2h London Open alert!</code>\n"
+                        "• Recurring: <code>/schedule every 24h Daily market check</code>\n"
+                        "• Daily UTC: <code>/schedule daily 08:30 Good morning traders!</code>",
+                        chat_id=chat_id,
+                    )
+                    return
+
+                # Parse timing and message body
+                sub_lower = subcmd.lower()
+                if sub_lower in {"in", "every", "daily"} and len(parts) >= 4:
+                    time_expr = f"{parts[1]} {parts[2]}"
+                    msg_start_idx = 3
+                else:
+                    time_expr = parts[1]
+                    msg_start_idx = 2
+
+                msg_text = " ".join(parts[msg_start_idx:])
+                if msg_text.startswith("<") and msg_text.endswith(">"):
+                    msg_text = msg_text[1:-1].strip()
+
+                ok, resp = create_scheduled_broadcast(time_expr, msg_text, target="all")
+                send_telegram_message(resp, chat_id=chat_id)
+                return
+
+            if command in {"/schedules", "/scheduled"}:
+                send_telegram_message(list_schedules_report(), chat_id=chat_id)
+                return
+
+            if command in {"/cancelschedule", "/delschedule", "/unschedule"}:
+                if not subcmd:
+                    send_telegram_message("⚠️ Usage: <code>/cancelschedule &lt;Schedule ID&gt;</code>\nExample: <code>/cancelschedule SB-101</code>", chat_id=chat_id)
+                    return
+                ok, resp = cancel_schedule(subcmd)
+                send_telegram_message(resp, chat_id=chat_id)
                 return
 
         # -------------------------------------------------------------
@@ -306,6 +364,12 @@ def main() -> None:
             payload["offset"] = offset
 
         try:
+            # Process due broadcasts in background polling loop
+            try:
+                process_due_broadcasts()
+            except Exception as e:
+                print(f"[ScheduledBroadcast] Loop error: {e}")
+
             updates = telegram_request("getUpdates", payload, timeout=25).get("result", [])
 
             for update in updates:

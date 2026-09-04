@@ -1,5 +1,6 @@
 import time
 import pytest
+from unittest.mock import patch
 from bot.access_control import (
     ADMIN_CHAT_ID,
     is_admin,
@@ -12,6 +13,11 @@ from bot.access_control import (
     list_users_report,
     list_keys_report,
     get_user_plan_report,
+    parse_schedule_timing,
+    create_scheduled_broadcast,
+    cancel_schedule,
+    list_schedules_report,
+    process_due_broadcasts,
     _STORE,
 )
 
@@ -20,6 +26,7 @@ from bot.access_control import (
 def clear_store():
     _STORE["keys"].clear()
     _STORE["users"].clear()
+    _STORE["schedules"].clear()
 
 
 class TestAdminAccess:
@@ -41,7 +48,6 @@ class TestVisitorTracking:
         assert auth is False
         assert status == "unregistered"
 
-        # User is in store as pending visitor
         assert "888999" in _STORE["users"]
         assert _STORE["users"]["888999"]["username"] == "crypto_fan"
         assert _STORE["users"]["888999"]["status"] == "pending"
@@ -50,7 +56,6 @@ class TestVisitorTracking:
         user_info = {"id": 777666, "username": "bad_visitor", "first_name": "Bad"}
         is_user_authorized(777666, user_info)
 
-        # Admin revokes the visitor
         ok, msg = revoke_user("@bad_visitor")
         assert ok is True
         assert "REVOKED" in msg
@@ -59,7 +64,6 @@ class TestVisitorTracking:
         assert auth is False
         assert status == "revoked"
 
-        # Revoked user cannot redeem a key
         key, _ = generate_key("30d")
         ok_redeem, msg_redeem = redeem_key(777666, user_info, key)
         assert ok_redeem is False
@@ -123,7 +127,6 @@ class TestUserRevocationAndRestore:
         auth_before, _ = is_user_authorized(555666)
         assert auth_before is True
 
-        # Admin revokes user
         ok, msg = revoke_user("555666")
         assert ok is True
         assert "REVOKED" in msg
@@ -132,12 +135,10 @@ class TestUserRevocationAndRestore:
         assert auth_after is False
         assert status == "revoked"
 
-        # Admin restores / unbans user
         ok_unban, msg_unban = unban_user("555666")
         assert ok_unban is True
         assert "RESTORED" in msg_unban
 
-        # Since 30d hasn't expired yet, active status is restored
         auth_restored, status_restored = is_user_authorized(555666)
         assert auth_restored is True
         assert status_restored == "active"
@@ -163,9 +164,94 @@ class TestDirectGrant:
         assert status == "active"
 
 
+class TestScheduledBroadcasts:
+    def test_parse_timing_expressions(self):
+        # One-time in 2h
+        ts, interval, label, is_rec = parse_schedule_timing("in 2h")
+        assert is_rec is False
+        assert interval is None
+        assert "2 Hours" in label
+
+        # Recurring every 24h
+        ts_rec, interval_rec, label_rec, is_rec2 = parse_schedule_timing("every 24h")
+        assert is_rec2 is True
+        assert interval_rec == 86400
+        assert "24 Hours" in label_rec
+
+        # Daily at 08:30 UTC
+        ts_daily, interval_daily, label_daily, is_rec3 = parse_schedule_timing("daily 08:30")
+        assert is_rec3 is True
+        assert interval_daily == 86400
+        assert "08:30 UTC" in label_daily
+
+    def test_create_and_cancel_schedule(self):
+        ok, msg = create_scheduled_broadcast("in 2h", "London open is starting!", target="all")
+        assert ok is True
+        assert "One-Time Schedule Created" in msg
+        assert "SB-" in msg
+
+        # Extract ID from store
+        sched_id = list(_STORE["schedules"].keys())[0]
+        assert "schedules" in _STORE
+        assert sched_id in _STORE["schedules"]
+
+        # Cancel schedule
+        ok_cancel, msg_cancel = cancel_schedule(sched_id)
+        assert ok_cancel is True
+        assert "CANCELLED" in msg_cancel
+        assert sched_id not in _STORE["schedules"]
+
+    @patch("bot.telegram.send_telegram_message")
+    def test_process_due_broadcasts_one_time(self, mock_send):
+        # Create schedule due in the past
+        now = time.time()
+        _STORE["schedules"]["SB-TEST1"] = {
+            "id": "SB-TEST1",
+            "message": "Immediate alert",
+            "target": "all",
+            "is_recurring": False,
+            "interval_seconds": None,
+            "timing_label": "Once",
+            "next_run_ts": now - 10,
+            "status": "active",
+            "executions_count": 0,
+        }
+
+        executed = process_due_broadcasts()
+        assert len(executed) == 1
+        assert executed[0]["id"] == "SB-TEST1"
+        assert mock_send.called
+        # One-time schedule is completed and deleted
+        assert "SB-TEST1" not in _STORE["schedules"]
+
+    @patch("bot.telegram.send_telegram_message")
+    def test_process_due_broadcasts_recurring(self, mock_send):
+        now = time.time()
+        _STORE["schedules"]["SB-REC1"] = {
+            "id": "SB-REC1",
+            "message": "Daily alert",
+            "target": "all",
+            "is_recurring": True,
+            "interval_seconds": 86400,
+            "timing_label": "Recurring 24h",
+            "next_run_ts": now - 10,
+            "status": "active",
+            "executions_count": 0,
+        }
+
+        executed = process_due_broadcasts()
+        assert len(executed) == 1
+        assert executed[0]["id"] == "SB-REC1"
+        assert mock_send.called
+
+        # Recurring schedule is NOT deleted, its next_run_ts is advanced by 24h
+        assert "SB-REC1" in _STORE["schedules"]
+        assert _STORE["schedules"]["SB-REC1"]["next_run_ts"] > now
+        assert _STORE["schedules"]["SB-REC1"]["executions_count"] == 1
+
+
 class TestReports:
     def test_list_users_report(self):
-        # Add 1 active VIP, 1 visitor
         key, _ = generate_key("30d")
         redeem_key(1234, {"username": "vip_user"}, key)
         is_user_authorized(5678, {"username": "pending_visitor"})
@@ -181,6 +267,13 @@ class TestReports:
         report = list_keys_report()
         assert "Available (Unused):</b> <code>2</code>" in report
         assert "VIP-" in report
+
+    def test_list_schedules_report(self):
+        create_scheduled_broadcast("every 12h", "Check BTC signals")
+        rep = list_schedules_report()
+        assert "Scheduled Broadcasts Dashboard" in rep
+        assert "Check BTC signals" in rep
+        assert "SB-" in rep
 
     def test_user_plan_report(self):
         key, _ = generate_key("30d")

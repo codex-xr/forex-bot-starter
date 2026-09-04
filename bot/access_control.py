@@ -3,6 +3,7 @@ import json
 import secrets
 import time
 import html
+import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
@@ -15,6 +16,7 @@ ADMIN_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", "6686703329"))
 _STORE: dict = {
     "keys": {},
     "users": {},
+    "schedules": {},
 }
 
 
@@ -33,8 +35,13 @@ def _get_store_path() -> Path:
         return tmp_dir / "access_store.json"
 
 
-def _load_store() -> dict:
-    global _STORE
+_LOADED = False
+
+
+def _load_store(force: bool = False) -> dict:
+    global _STORE, _LOADED
+    if _LOADED and not force:
+        return _STORE
     try:
         path = _get_store_path()
         if path.exists():
@@ -42,6 +49,8 @@ def _load_store() -> dict:
                 data = json.load(f)
                 _STORE["keys"] = data.get("keys", {})
                 _STORE["users"] = data.get("users", {})
+                _STORE["schedules"] = data.get("schedules", {})
+        _LOADED = True
     except Exception as exc:
         print(f"[AccessControl] Error loading store: {exc}")
     return _STORE
@@ -505,7 +514,7 @@ def get_user_plan_report(chat_id: int | str) -> str:
         return (
             "👑 <b>Account Status: Master Administrator</b>\n\n"
             "• <b>Privilege:</b> Permanent Full Access\n"
-            "• <b>Admin Controls:</b> <code>/genkey</code>, <code>/users</code>, <code>/revoke</code>, <code>/unban</code>, <code>/grant</code>, <code>/keys</code>, <code>/broadcast</code>"
+            "• <b>Admin Controls:</b> <code>/genkey</code>, <code>/users</code>, <code>/revoke</code>, <code>/unban</code>, <code>/grant</code>, <code>/keys</code>, <code>/broadcast</code>, <code>/schedule</code>, <code>/schedules</code>"
         )
 
     _load_store()
@@ -580,3 +589,269 @@ def get_broadcast_recipients(only_vip: bool = False) -> list[int]:
 
 def get_all_active_chat_ids() -> list[int]:
     return get_broadcast_recipients(only_vip=False)
+
+
+# ===========================================================================
+# ⏰ SCHEDULED & RECURRING BROADCASTS ENGINE
+# ===========================================================================
+
+def parse_schedule_timing(time_expr: str) -> tuple[float | None, int | None, str, bool]:
+    """
+    Parses schedule timing expressions:
+    - 'in 30m', '2h', '1d', 'in 45s' -> one-time delay
+    - 'every 12h', 'every 24h', 'every 1d' -> recurring interval
+    - 'daily 08:30', 'daily 08:30 utc', '08:30 utc' -> recurring daily at specific UTC time
+    Returns (next_run_ts, interval_seconds, timing_label, is_recurring).
+    """
+    now = datetime.now(timezone.utc)
+    s = _clean_target(time_expr).lower().replace("utc", "").strip()
+
+    # Case 1: Daily at specific time (e.g. 'daily 08:30' or '08:30')
+    daily_match = re.search(r"(?:daily\s+)?(\d{1,2}):(\d{2})", s)
+    if daily_match and ("every" not in s or "daily" in s):
+        hour = int(daily_match.group(1))
+        minute = int(daily_match.group(2))
+        target_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target_today <= now:
+            target_time = target_today + timedelta(days=1)
+        else:
+            target_time = target_today
+
+        interval = 86400  # 24 hours
+        label = f"Daily at {hour:02d}:{minute:02d} UTC"
+        return target_time.timestamp(), interval, label, True
+
+    # Case 2: Recurring interval ('every 12h', 'every 1d', 'every 30m')
+    if s.startswith("every"):
+        rest = s.replace("every", "").strip()
+        num_match = re.search(r"(\d+)\s*([a-zA-Z]+)", rest)
+        if num_match:
+            val = int(num_match.group(1))
+            unit = num_match.group(2).lower()
+            if unit.startswith("m"):
+                sec = val * 60
+                unit_label = "Minute" if val == 1 else "Minutes"
+            elif unit.startswith("h"):
+                sec = val * 3600
+                unit_label = "Hour" if val == 1 else "Hours"
+            elif unit.startswith("d"):
+                sec = val * 86400
+                unit_label = "Day" if val == 1 else "Days"
+            elif unit.startswith("s"):
+                sec = val
+                unit_label = "Second" if val == 1 else "Seconds"
+            else:
+                sec = val * 3600
+                unit_label = "Hours"
+
+            next_run = (now + timedelta(seconds=sec)).timestamp()
+            label = f"Recurring every {val} {unit_label}"
+            return next_run, sec, label, True
+
+    # Case 3: One-time delay ('in 2h', '30m', '1d', 'in 45s')
+    clean_once = s.replace("in", "").strip()
+    num_match = re.search(r"(\d+)\s*([a-zA-Z]+)", clean_once)
+    if num_match:
+        val = int(num_match.group(1))
+        unit = num_match.group(2).lower()
+        if unit.startswith("m"):
+            sec = val * 60
+            unit_label = "Minute" if val == 1 else "Minutes"
+        elif unit.startswith("h"):
+            sec = val * 3600
+            unit_label = "Hour" if val == 1 else "Hours"
+        elif unit.startswith("d"):
+            sec = val * 86400
+            unit_label = "Day" if val == 1 else "Days"
+        elif unit.startswith("s"):
+            sec = val
+            unit_label = "Second" if val == 1 else "Seconds"
+        else:
+            sec = val * 3600
+            unit_label = "Hours"
+
+        next_run = (now + timedelta(seconds=sec)).timestamp()
+        label = f"Once in {val} {unit_label}"
+        return next_run, None, label, False
+
+    return None, None, "Invalid Timing", False
+
+
+def create_scheduled_broadcast(time_expr: str, message_text: str, target: str = "all") -> tuple[bool, str]:
+    """
+    Creates and stores a scheduled or recurring broadcast.
+    """
+    _load_store()
+    next_run_ts, interval, label, is_recurring = parse_schedule_timing(time_expr)
+
+    if not next_run_ts:
+        return False, (
+            "⚠️ <b>Invalid Timing Format.</b>\n\n"
+            "<b>Valid Examples:</b>\n"
+            "• One-time: <code>/schedule in 2h Message</code>\n"
+            "• Recurring: <code>/schedule every 24h Message</code>\n"
+            "• Daily time: <code>/schedule daily 08:30 Message</code>"
+        )
+
+    raw_msg = _clean_target(message_text)
+    if not raw_msg:
+        return False, "⚠️ Please provide a message text for the scheduled broadcast."
+
+    sched_id = f"SB-{secrets.token_hex(2).upper()}"
+    next_date_str = datetime.fromtimestamp(next_run_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    _STORE["schedules"][sched_id] = {
+        "id": sched_id,
+        "message": raw_msg,
+        "target": target.lower(),
+        "is_recurring": is_recurring,
+        "interval_seconds": interval,
+        "timing_label": label,
+        "next_run_ts": next_run_ts,
+        "next_run_str": next_date_str,
+        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "status": "active",
+        "executions_count": 0,
+        "last_executed_at": None,
+    }
+    _save_store()
+
+    safe_id = html.escape(sched_id)
+    safe_label = html.escape(label)
+    safe_date = html.escape(next_date_str)
+    safe_preview = html.escape(raw_msg[:100] + ("..." if len(raw_msg) > 100 else ""))
+
+    rec_type = "🔁 <b>Recurring Schedule Created</b>" if is_recurring else "⏰ <b>One-Time Schedule Created</b>"
+
+    return True, (
+        f"{rec_type}\n\n"
+        f"• <b>ID:</b> <code>{safe_id}</code>\n"
+        f"• <b>Timing:</b> {safe_label}\n"
+        f"• <b>First Run:</b> <code>{safe_date}</code>\n"
+        f"• <b>Audience:</b> <code>{target.upper()}</code>\n"
+        f"• <b>Message:</b> <i>'{safe_preview}'</i>\n\n"
+        f"<i>To cancel anytime: <code>/cancelschedule {safe_id}</code></i>"
+    )
+
+
+def cancel_schedule(sched_id: str) -> tuple[bool, str]:
+    """
+    Cancels and deletes a scheduled broadcast.
+    """
+    _load_store()
+    clean_id = _clean_target(sched_id).upper()
+
+    if clean_id not in _STORE["schedules"]:
+        return False, f"Schedule ID <code>{html.escape(clean_id)}</code> not found."
+
+    sched = _STORE["schedules"][clean_id]
+    del _STORE["schedules"][clean_id]
+    _save_store()
+
+    return True, f"🗑️ Scheduled broadcast <code>{html.escape(clean_id)}</code> (<i>{html.escape(sched.get('timing_label', ''))}</i>) has been <b>CANCELLED</b>."
+
+
+def list_schedules_report() -> str:
+    """
+    Lists all active and recent scheduled broadcasts.
+    """
+    _load_store()
+    schedules = _STORE.get("schedules", {})
+    if not schedules:
+        return (
+            "⏰ <b>Scheduled Broadcasts Dashboard</b>\n\n"
+            "<i>No broadcasts currently scheduled.</i>\n\n"
+            "<b>To schedule an announcement:</b>\n"
+            "• <code>/schedule in 2h &lt;message&gt;</code>\n"
+            "• <code>/schedule every 24h &lt;message&gt;</code>\n"
+            "• <code>/schedule daily 08:30 &lt;message&gt;</code>"
+        )
+
+    lines = [
+        "⏰ <b>Scheduled Broadcasts Dashboard</b>",
+        f"• <b>Total Active Schedules:</b> <code>{len(schedules)}</code>",
+        "",
+    ]
+
+    for sid, s in schedules.items():
+        emoji = "🔁" if s.get("is_recurring") else "⏰"
+        safe_id = html.escape(sid)
+        safe_label = html.escape(str(s.get("timing_label", "Scheduled")))
+        safe_next = html.escape(str(s.get("next_run_str", "N/A")))
+        safe_msg = html.escape(str(s.get("message", "")[:80]) + ("..." if len(str(s.get("message", ""))) > 80 else ""))
+        exec_count = s.get("executions_count", 0)
+
+        lines.append(f"{emoji} <b>{safe_id}</b> — {safe_label}")
+        lines.append(f"   • Next run: <code>{safe_next}</code> | Sent: {exec_count} times")
+        lines.append(f"   • Message: <i>'{safe_msg}'</i>")
+        lines.append(f"   • Cancel: <code>/cancelschedule {safe_id}</code>")
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+def process_due_broadcasts() -> list[dict]:
+    """
+    Checks and executes any due scheduled broadcasts.
+    Dispatches Telegram messages and advances recurring schedules.
+    """
+    from bot.telegram import send_telegram_message
+
+    _load_store()
+    schedules = _STORE.get("schedules", {})
+    if not schedules:
+        return []
+
+    now_ts = time.time()
+    now_dt = datetime.now(timezone.utc)
+    executed = []
+    to_delete = []
+
+    for sid, s in list(schedules.items()):
+        if s.get("status") != "active":
+            continue
+
+        next_ts = s.get("next_run_ts", float("inf"))
+        if now_ts >= next_ts:
+            # Broadcast is due!
+            raw_msg = s.get("message", "")
+            safe_msg = html.escape(raw_msg)
+            broadcast_text = f"📢 <b>ADMIN ANNOUNCEMENT</b>\n\n{safe_msg}"
+
+            target = s.get("target", "all")
+            recipients = get_broadcast_recipients(only_vip=(target == "vip"))
+
+            sent_count = 0
+            for cid in recipients:
+                try:
+                    send_telegram_message(broadcast_text, chat_id=cid)
+                    sent_count += 1
+                    time.sleep(0.04)
+                except Exception as exc:
+                    print(f"[ScheduledBroadcast] Error sending to {cid}: {exc}")
+
+            s["executions_count"] = s.get("executions_count", 0) + 1
+            s["last_executed_at"] = now_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+            executed.append({
+                "id": sid,
+                "sent_count": sent_count,
+                "label": s.get("timing_label"),
+            })
+
+            # Handle recurrence
+            if s.get("is_recurring") and s.get("interval_seconds"):
+                s["next_run_ts"] += s["interval_seconds"]
+                s["next_run_str"] = datetime.fromtimestamp(s["next_run_ts"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            else:
+                s["status"] = "completed"
+                to_delete.append(sid)
+
+    # Clean up completed one-time schedules
+    for sid in to_delete:
+        del schedules[sid]
+
+    if executed:
+        _save_store()
+
+    return executed
