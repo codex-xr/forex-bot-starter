@@ -1,12 +1,28 @@
-﻿import json
+import json
 import os
+import sys
+import traceback
 from http.server import BaseHTTPRequestHandler
+from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-from bot.telegram_commands import handle_message
-from bot.autopilot import autopilot
-from bot.session_bot import ALL_WATCHLIST
+ROOT_DIR = str(Path(__file__).resolve().parent.parent)
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+try:
+    from bot.telegram_commands import handle_message
+    from bot.autopilot import autopilot
+    from bot.session_bot import ALL_WATCHLIST
+except Exception as import_err:
+    print(f"[Vercel Startup Error]: {import_err}")
+    handle_message = None
+    autopilot = None
+    ALL_WATCHLIST = []
+    _IMPORT_ERROR = traceback.format_exc()
+else:
+    _IMPORT_ERROR = None
 
 
 class handler(BaseHTTPRequestHandler):
