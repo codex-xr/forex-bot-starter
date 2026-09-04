@@ -123,6 +123,10 @@ def redeem_key(chat_id: int | str, user_info: dict, key_code: str) -> tuple[bool
     chat_id_str = str(chat_id)
     key_clean = key_code.strip().upper()
 
+    existing = _STORE["users"].get(chat_id_str)
+    if existing and existing.get("status") == "revoked":
+        return False, "🚫 <b>Account Revoked:</b> Your access has been terminated by the Administrator and cannot redeem keys."
+
     if key_clean not in _STORE["keys"]:
         return False, "❌ Invalid Activation Key. Please double check the code."
 
@@ -138,9 +142,8 @@ def redeem_key(chat_id: int | str, user_info: dict, key_code: str) -> tuple[bool
         expires_at_str = "Never (Lifetime)"
         expires_ts = None
     else:
-        existing = _STORE["users"].get(chat_id_str)
         if existing and existing.get("status") == "active" and existing.get("expires_ts"):
-            current_exp = datetime.utcfromtimestamp(existing["expires_ts"])
+            current_exp = datetime.fromtimestamp(existing["expires_ts"], tz=timezone.utc)
             base_date = max(now, current_exp)
         else:
             base_date = now
@@ -157,8 +160,8 @@ def redeem_key(chat_id: int | str, user_info: dict, key_code: str) -> tuple[bool
     # Update or create user
     _STORE["users"][chat_id_str] = {
         "chat_id": chat_id_str,
-        "username": user_info.get("username", "Unknown"),
-        "first_name": user_info.get("first_name", "User"),
+        "username": user_info.get("username", existing.get("username", "Unknown") if existing else "Unknown"),
+        "first_name": user_info.get("first_name", existing.get("first_name", "User") if existing else "User"),
         "plan_label": key_data["label"],
         "activated_at": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
         "expires_at": expires_at_str,
@@ -174,8 +177,8 @@ def redeem_key(chat_id: int | str, user_info: dict, key_code: str) -> tuple[bool
 
 def is_user_authorized(chat_id: int | str, user_info: dict | None = None) -> tuple[bool, str]:
     """
-    Checks if a user is authorized to use the bot.
-    Returns (is_authorized, reason_message).
+    Checks if a user is authorized to use the bot and automatically
+    logs ALL visitors into the user database for tracking.
     """
     if is_admin(chat_id):
         return True, "Admin"
@@ -183,18 +186,39 @@ def is_user_authorized(chat_id: int | str, user_info: dict | None = None) -> tup
     _load_store()
     chat_id_str = str(chat_id)
     user = _STORE["users"].get(chat_id_str)
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
+    # Auto-register new visitor
     if not user:
+        _STORE["users"][chat_id_str] = {
+            "chat_id": chat_id_str,
+            "username": user_info.get("username", "Unknown") if user_info else "Unknown",
+            "first_name": user_info.get("first_name", "Visitor") if user_info else "Visitor",
+            "plan_label": "No Key (Pending)",
+            "activated_at": now_str,
+            "expires_at": "N/A",
+            "expires_ts": None,
+            "status": "pending",
+            "key_used": "None",
+            "last_active": now_str,
+        }
+        _save_store()
         return False, "unregistered"
 
+    # Update activity for existing user
     if user_info:
-        user["last_active"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        user["last_active"] = now_str
         if user_info.get("username"):
             user["username"] = user_info["username"]
+        if user_info.get("first_name"):
+            user["first_name"] = user_info["first_name"]
         _save_store()
 
     if user.get("status") == "revoked":
         return False, "revoked"
+
+    if user.get("status") == "pending":
+        return False, "unregistered"
 
     expires_ts = user.get("expires_ts")
     if expires_ts is not None:
@@ -208,27 +232,45 @@ def is_user_authorized(chat_id: int | str, user_info: dict | None = None) -> tup
 
 def revoke_user(target: str) -> tuple[bool, str]:
     """
-    Revokes access for a user by Chat ID or @username.
+    Revokes / terminates access for ANY user by Chat ID or @username.
     """
     _load_store()
     target_clean = target.strip().lstrip("@").lower()
 
     found_id = None
     for cid, u in _STORE["users"].items():
-        if cid == target_clean or (u.get("username") and u.get("username").lower() == target_clean):
+        if cid.lower() == target_clean or (u.get("username") and u.get("username").lower() == target_clean):
             found_id = cid
             break
 
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    # If target not yet recorded, create a pre-emptively revoked record
     if not found_id:
-        return False, f"User '{target}' not found in the database."
+        found_id = target_clean
+        _STORE["users"][found_id] = {
+            "chat_id": found_id,
+            "username": target_clean if not target_clean.isdigit() else "Unknown",
+            "first_name": "Revoked User",
+            "plan_label": "Revoked",
+            "activated_at": now_str,
+            "expires_at": "Revoked",
+            "expires_ts": None,
+            "status": "revoked",
+            "key_used": "Banned",
+            "last_active": now_str,
+            "revoked_at": now_str,
+        }
+        _save_store()
+        return True, f"🚫 Access for <code>{target}</code> (ID: <code>{found_id}</code>) has been <b>REVOKED & BANNED</b>."
 
     user = _STORE["users"][found_id]
     user["status"] = "revoked"
-    user["revoked_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    user["revoked_at"] = now_str
     _save_store()
 
-    uname = f"@{user.get('username')}" if user.get("username") != "Unknown" else user.get("first_name", found_id)
-    return True, f"🚫 Access for <b>{uname}</b> (ID: <code>{found_id}</code>) has been <b>REVOKED</b>."
+    uname = f"@{user.get('username')}" if user.get("username") and user.get("username") != "Unknown" else user.get("first_name", found_id)
+    return True, f"🚫 Access for <b>{uname}</b> (ID: <code>{found_id}</code>) has been <b>REVOKED & BANNED</b>."
 
 
 def grant_user(target: str, duration_str: str = "30d", admin_note: str = "Admin Grant") -> tuple[bool, str]:
@@ -276,44 +318,79 @@ def grant_user(target: str, duration_str: str = "30d", admin_note: str = "Admin 
 
 def list_users_report() -> str:
     """
-    Formats clean Telegram report of all users for the Admin.
+    Formats clean Telegram report of ALL users (Active VIPs, Pending Visitors, Expired, Revoked).
     """
     _load_store()
     users = _STORE["users"]
     if not users:
-        return "👥 <b>Registered Users:</b>\n\n<i>No users have redeemed access keys yet.</i>"
+        return "👥 <b>All Bot Users:</b>\n\n<i>No accounts have messaged the bot yet.</i>"
 
-    active_count = sum(1 for u in users.values() if u.get("status") == "active" and (not u.get("expires_ts") or u.get("expires_ts") > time.time()))
-    revoked_count = sum(1 for u in users.values() if u.get("status") == "revoked")
-    expired_count = sum(1 for u in users.values() if u.get("status") == "expired" or (u.get("status") == "active" and u.get("expires_ts") and u.get("expires_ts") <= time.time()))
+    active_users = []
+    pending_users = []
+    expired_users = []
+    revoked_users = []
+
+    for cid, u in users.items():
+        st = u.get("status", "pending")
+        if st == "active":
+            if u.get("expires_ts") and u.get("expires_ts") <= time.time():
+                expired_users.append((cid, u))
+            else:
+                active_users.append((cid, u))
+        elif st == "revoked":
+            revoked_users.append((cid, u))
+        elif st == "expired":
+            expired_users.append((cid, u))
+        else:
+            pending_users.append((cid, u))
 
     lines = [
-        "👥 <b>VIP User Management & Statistics</b>",
-        f"• <b>Total Registered:</b> <code>{len(users)}</code>",
-        f"• 🟢 <b>Active:</b> <code>{active_count}</code> | 🔴 <b>Revoked:</b> <code>{revoked_count}</code> | ⏳ <b>Expired:</b> <code>{expired_count}</code>",
+        "👥 <b>Full User Dashboard & Access Tracker</b>",
+        f"• <b>Total Tracked Accounts:</b> <code>{len(users)}</code>",
+        f"• 🟢 <b>VIP Active:</b> <code>{len(active_users)}</code>",
+        f"• 🔒 <b>Pending Visitors:</b> <code>{len(pending_users)}</code>",
+        f"• ⏳ <b>Expired:</b> <code>{len(expired_users)}</code>",
+        f"• 🚫 <b>Revoked / Banned:</b> <code>{len(revoked_users)}</code>",
         "",
-        "<b>User List:</b>",
     ]
 
-    for i, (cid, u) in enumerate(users.items(), 1):
-        uname = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
-        status = u.get("status", "unknown")
-
-        if status == "active" and u.get("expires_ts") and u.get("expires_ts") <= time.time():
-            status = "expired"
-
-        emoji = "🟢" if status == "active" else ("🚫" if status == "revoked" else "⏳")
-        exp = u.get("expires_at", "N/A")
-        plan = u.get("plan_label", "VIP")
-        last = u.get("last_active", "Never")
-
-        lines.append(f"{i}. {emoji} <b>{uname}</b> (<code>{cid}</code>)")
-        lines.append(f"   • Plan: <code>{plan}</code> | Status: <b>{status.upper()}</b>")
-        lines.append(f"   • Expires: <code>{exp}</code>")
-        lines.append(f"   • Last active: {last}")
+    if active_users:
+        lines.append("🟢 <b>Active VIP Subscribers:</b>")
+        for cid, u in active_users:
+            uname = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
+            exp = u.get("expires_at", "N/A")
+            plan = u.get("plan_label", "VIP")
+            last = u.get("last_active", "N/A")
+            lines.append(f"• <b>{uname}</b> (<code>{cid}</code>) — {plan}")
+            lines.append(f"  Expires: <code>{exp}</code> | Seen: {last}")
         lines.append("")
 
-    lines.append("<i>To revoke access: <code>/revoke &lt;user_id&gt;</code></i>")
+    if pending_users:
+        lines.append("🔒 <b>Visitors (No Key / Pending):</b>")
+        for cid, u in pending_users[-10:]:
+            uname = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
+            last = u.get("last_active", "N/A")
+            lines.append(f"• <b>{uname}</b> (ID: <code>{cid}</code>) — Last seen: {last}")
+        lines.append("")
+
+    if expired_users:
+        lines.append("⏳ <b>Expired Accounts:</b>")
+        for cid, u in expired_users[-5:]:
+            uname = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
+            lines.append(f"• <b>{uname}</b> (<code>{cid}</code>) — Expired: {u.get('expires_at')}")
+        lines.append("")
+
+    if revoked_users:
+        lines.append("🚫 <b>Revoked / Banned Users:</b>")
+        for cid, u in revoked_users[-5:]:
+            uname = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
+            lines.append(f"• <b>{uname}</b> (<code>{cid}</code>) — Revoked")
+        lines.append("")
+
+    lines.append("<b>Admin Quick Actions:</b>")
+    lines.append("• Terminate user: <code>/revoke &lt;user_id&gt;</code>")
+    lines.append("• Grant access: <code>/grant &lt;user_id&gt; 30d</code>")
+
     return "\n".join(lines).strip()
 
 
@@ -384,6 +461,13 @@ def get_user_plan_report(chat_id: int | str) -> str:
             f"⏳ <b>Account Status: Expired</b>\n\n"
             f"Your subscription expired on <code>{user.get('expires_at')}</code>.\n"
             f"To renew, redeem a new key with <code>/redeem &lt;NEW_KEY&gt;</code>."
+        )
+
+    if status == "pending":
+        return (
+            "🔒 <b>No Active Subscription</b>\n\n"
+            "You have not redeemed a VIP key yet.\n"
+            "Activate your account with: <code>/redeem &lt;YOUR_KEY&gt;</code>"
         )
 
     return (

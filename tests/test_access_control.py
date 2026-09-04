@@ -1,6 +1,5 @@
 import time
 import pytest
-from unittest.mock import patch
 from bot.access_control import (
     ADMIN_CHAT_ID,
     is_admin,
@@ -32,6 +31,38 @@ class TestAdminAccess:
         auth, reason = is_user_authorized(ADMIN_CHAT_ID)
         assert auth is True
         assert reason == "Admin"
+
+
+class TestVisitorTracking:
+    def test_new_visitor_is_automatically_recorded(self):
+        user_info = {"id": 888999, "username": "crypto_fan", "first_name": "Fan"}
+        auth, status = is_user_authorized(888999, user_info)
+        assert auth is False
+        assert status == "unregistered"
+
+        # User is in store as pending visitor
+        assert "888999" in _STORE["users"]
+        assert _STORE["users"]["888999"]["username"] == "crypto_fan"
+        assert _STORE["users"]["888999"]["status"] == "pending"
+
+    def test_admin_can_revoke_visitor(self):
+        user_info = {"id": 777666, "username": "bad_visitor", "first_name": "Bad"}
+        is_user_authorized(777666, user_info)
+
+        # Admin revokes the visitor
+        ok, msg = revoke_user("@bad_visitor")
+        assert ok is True
+        assert "REVOKED" in msg
+
+        auth, status = is_user_authorized(777666, user_info)
+        assert auth is False
+        assert status == "revoked"
+
+        # Revoked user cannot redeem a key
+        key, _ = generate_key("30d")
+        ok_redeem, msg_redeem = redeem_key(777666, user_info, key)
+        assert ok_redeem is False
+        assert "Account Revoked" in msg_redeem
 
 
 class TestKeyGenerationAndRedemption:
@@ -100,18 +131,6 @@ class TestUserRevocation:
         assert auth_after is False
         assert status == "revoked"
 
-    def test_revoke_user_by_username(self):
-        key, _ = generate_key("30d")
-        user_info = {"id": 777888, "username": "spammer", "first_name": "Spam"}
-        redeem_key(777888, user_info, key)
-
-        ok, msg = revoke_user("@spammer")
-        assert ok is True
-
-        auth_after, status = is_user_authorized(777888)
-        assert auth_after is False
-        assert status == "revoked"
-
 
 class TestDirectGrant:
     def test_grant_user_access(self):
@@ -126,13 +145,15 @@ class TestDirectGrant:
 
 class TestReports:
     def test_list_users_report(self):
+        # Add 1 active VIP, 1 visitor
         key, _ = generate_key("30d")
         redeem_key(1234, {"username": "vip_user"}, key)
+        is_user_authorized(5678, {"username": "pending_visitor"})
 
         report = list_users_report()
-        assert "Total Registered" in report
+        assert "Total Tracked Accounts" in report
         assert "vip_user" in report
-        assert "ACTIVE" in report
+        assert "pending_visitor" in report
 
     def test_list_keys_report(self):
         generate_key("7d")
