@@ -2,6 +2,7 @@ import os
 import json
 import secrets
 import time
+import html
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
@@ -61,25 +62,34 @@ except Exception:
     pass
 
 
+def _clean_target(target: str) -> str:
+    """Strips whitespace, @ signs, angle brackets <>, quotes, and punctuation."""
+    if not target:
+        return ""
+    t = target.strip().strip("<>\"'").lstrip("@").strip("<>\"'").strip()
+    return t
+
+
 def is_admin(chat_id: int | str) -> bool:
     try:
-        return int(chat_id) == ADMIN_CHAT_ID
+        clean_id = _clean_target(str(chat_id))
+        return int(clean_id) == ADMIN_CHAT_ID
     except (ValueError, TypeError):
         return False
 
 
 def parse_duration(duration_str: str) -> tuple[int | None, str]:
     """
-    Parses duration string like '7d', '30d', '90d', '365d', 'lifetime'.
+    Parses duration string like '1d', '7d', '30d', '90d', '365d', 'lifetime'.
     Returns (days, label).
     """
-    s = duration_str.strip().lower()
+    s = _clean_target(duration_str).lower()
     if s in ("lifetime", "perm", "permanent", "unlimited"):
         return None, "Lifetime"
     if s.endswith("d") or s.endswith("days") or s.endswith("day"):
         num_str = "".join(filter(str.isdigit, s))
         days = int(num_str) if num_str else 30
-        return days, f"{days} Days"
+        return days, f"{days} Day{'s' if days != 1 else ''}"
     if s.endswith("m") or s.endswith("months") or s.endswith("month"):
         num_str = "".join(filter(str.isdigit, s))
         months = int(num_str) if num_str else 1
@@ -87,7 +97,7 @@ def parse_duration(duration_str: str) -> tuple[int | None, str]:
         return days, f"{months} Month{'s' if months > 1 else ''}"
     if s.isdigit():
         days = int(s)
-        return days, f"{days} Days"
+        return days, f"{days} Day{'s' if days != 1 else ''}"
     return 30, "30 Days"
 
 
@@ -120,8 +130,8 @@ def redeem_key(chat_id: int | str, user_info: dict, key_code: str) -> tuple[bool
     Redeems a VIP key for a given user.
     """
     _load_store()
-    chat_id_str = str(chat_id)
-    key_clean = key_code.strip().upper()
+    chat_id_str = _clean_target(str(chat_id))
+    key_clean = _clean_target(key_code).upper()
 
     existing = _STORE["users"].get(chat_id_str)
     if existing and existing.get("status") == "revoked":
@@ -172,7 +182,7 @@ def redeem_key(chat_id: int | str, user_info: dict, key_code: str) -> tuple[bool
     }
     _save_store()
 
-    return True, f"🎉 <b>Access Activated Successfully!</b>\n\n• <b>Plan:</b> {key_data['label']}\n• <b>Expires:</b> <code>{expires_at_str}</code>\n\nYou now have full access to all Forex, Crypto & Memecoin signals! Type /help to begin."
+    return True, f"🎉 <b>Access Activated Successfully!</b>\n\n• <b>Plan:</b> {html.escape(key_data['label'])}\n• <b>Expires:</b> <code>{html.escape(expires_at_str)}</code>\n\nYou now have full access to all Forex, Crypto & Memecoin signals! Type /help to begin."
 
 
 def is_user_authorized(chat_id: int | str, user_info: dict | None = None) -> tuple[bool, str]:
@@ -180,18 +190,18 @@ def is_user_authorized(chat_id: int | str, user_info: dict | None = None) -> tup
     Checks if a user is authorized to use the bot and automatically
     logs ALL visitors into the user database for tracking.
     """
-    if is_admin(chat_id):
+    clean_id = _clean_target(str(chat_id))
+    if is_admin(clean_id):
         return True, "Admin"
 
     _load_store()
-    chat_id_str = str(chat_id)
-    user = _STORE["users"].get(chat_id_str)
+    user = _STORE["users"].get(clean_id)
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     # Auto-register new visitor
     if not user:
-        _STORE["users"][chat_id_str] = {
-            "chat_id": chat_id_str,
+        _STORE["users"][clean_id] = {
+            "chat_id": clean_id,
             "username": user_info.get("username", "Unknown") if user_info else "Unknown",
             "first_name": user_info.get("first_name", "Visitor") if user_info else "Visitor",
             "plan_label": "No Key (Pending)",
@@ -235,7 +245,10 @@ def revoke_user(target: str) -> tuple[bool, str]:
     Revokes / terminates access for ANY user by Chat ID or @username.
     """
     _load_store()
-    target_clean = target.strip().lstrip("@").lower()
+    target_clean = _clean_target(target).lower()
+
+    if not target_clean:
+        return False, "Please specify a valid user ID or username to revoke."
 
     found_id = None
     for cid, u in _STORE["users"].items():
@@ -245,7 +258,6 @@ def revoke_user(target: str) -> tuple[bool, str]:
 
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    # If target not yet recorded, create a pre-emptively revoked record
     if not found_id:
         found_id = target_clean
         _STORE["users"][found_id] = {
@@ -262,16 +274,17 @@ def revoke_user(target: str) -> tuple[bool, str]:
             "revoked_at": now_str,
         }
         _save_store()
-        return True, f"🚫 Access for <code>{target}</code> (ID: <code>{found_id}</code>) has been <b>REVOKED & BANNED</b>."
+        return True, f"🚫 Access for <code>{html.escape(found_id)}</code> has been <b>REVOKED & BANNED</b>."
 
     user = _STORE["users"][found_id]
     user["status"] = "revoked"
     user["revoked_at"] = now_str
     _save_store()
 
-    uname = f"@{user.get('username')}" if user.get("username") and user.get("username") != "Unknown" else user.get("first_name", found_id)
-    return True, f"🚫 Access for <b>{uname}</b> (ID: <code>{found_id}</code>) has been <b>REVOKED & BANNED</b>."
-
+    raw_name = f"@{user.get('username')}" if user.get("username") and user.get("username") != "Unknown" else user.get("first_name", found_id)
+    safe_name = html.escape(str(raw_name))
+    safe_id = html.escape(str(found_id))
+    return True, f"🚫 Access for <b>{safe_name}</b> (ID: <code>{safe_id}</code>) has been <b>REVOKED & BANNED</b>."
 
 
 def unban_user(target: str) -> tuple[bool, str]:
@@ -279,7 +292,10 @@ def unban_user(target: str) -> tuple[bool, str]:
     Unbans / restores access for a previously revoked user by Chat ID or @username.
     """
     _load_store()
-    target_clean = target.strip().lstrip("@").lower()
+    target_clean = _clean_target(target).lower()
+
+    if not target_clean:
+        return False, "Please specify a valid user ID or username to unban."
 
     found_id = None
     for cid, u in _STORE["users"].items():
@@ -288,23 +304,25 @@ def unban_user(target: str) -> tuple[bool, str]:
             break
 
     if not found_id:
-        return False, f"User '{target}' not found in the database."
+        return False, f"User '{html.escape(target)}' not found in the database."
 
     user = _STORE["users"][found_id]
     if user.get("status") != "revoked":
-        return False, f"User '{target}' is not revoked (current status: {user.get('status')})."
+        return False, f"User is not revoked (current status: {html.escape(str(user.get('status')))})."
 
     expires_ts = user.get("expires_ts")
     if expires_ts and expires_ts > time.time():
         user["status"] = "active"
-        status_msg = f"Active access restored (Expires on {user.get('expires_at')})"
+        status_msg = f"Active access restored (Expires on {html.escape(str(user.get('expires_at')))})"
     else:
         user["status"] = "pending"
         status_msg = "Unbanned (User can now redeem a key or receive an admin grant)"
 
     _save_store()
-    uname = f"@{user.get('username')}" if user.get("username") and user.get("username") != "Unknown" else user.get("first_name", found_id)
-    return True, f"✅ Access for <b>{uname}</b> (ID: <code>{found_id}</code>) has been <b>RESTORED</b>.\n• {status_msg}"
+    raw_name = f"@{user.get('username')}" if user.get("username") and user.get("username") != "Unknown" else user.get("first_name", found_id)
+    safe_name = html.escape(str(raw_name))
+    safe_id = html.escape(str(found_id))
+    return True, f"✅ Access for <b>{safe_name}</b> (ID: <code>{safe_id}</code>) has been <b>RESTORED</b>.\n• {status_msg}"
 
 
 def grant_user(target: str, duration_str: str = "30d", admin_note: str = "Admin Grant") -> tuple[bool, str]:
@@ -312,7 +330,11 @@ def grant_user(target: str, duration_str: str = "30d", admin_note: str = "Admin 
     Directly grants or extends access for a user without needing a key.
     """
     _load_store()
-    target_clean = target.strip().lstrip("@")
+    target_clean = _clean_target(target)
+
+    if not target_clean:
+        return False, "Please specify a valid user ID or username."
+
     days, label = parse_duration(duration_str)
 
     now = datetime.now(timezone.utc)
@@ -347,7 +369,10 @@ def grant_user(target: str, duration_str: str = "30d", admin_note: str = "Admin 
         "last_active": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
     }
     _save_store()
-    return True, f"✅ Access granted to ID <code>{found_id}</code> ({label}, expires: <code>{expires_at_str}</code>)."
+    safe_id = html.escape(str(found_id))
+    safe_label = html.escape(str(label))
+    safe_exp = html.escape(str(expires_at_str))
+    return True, f"✅ Access granted to ID <code>{safe_id}</code> ({safe_label}, expires: <code>{safe_exp}</code>)."
 
 
 def list_users_report() -> str:
@@ -391,39 +416,48 @@ def list_users_report() -> str:
     if active_users:
         lines.append("🟢 <b>Active VIP Subscribers:</b>")
         for cid, u in active_users:
-            uname = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
-            exp = u.get("expires_at", "N/A")
-            plan = u.get("plan_label", "VIP")
-            last = u.get("last_active", "N/A")
-            lines.append(f"• <b>{uname}</b> (<code>{cid}</code>) — {plan}")
-            lines.append(f"  Expires: <code>{exp}</code> | Seen: {last}")
+            raw_name = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
+            safe_name = html.escape(str(raw_name))
+            safe_id = html.escape(str(cid))
+            safe_plan = html.escape(str(u.get('plan_label', 'VIP')))
+            safe_exp = html.escape(str(u.get('expires_at', 'N/A')))
+            safe_last = html.escape(str(u.get('last_active', 'N/A')))
+            lines.append(f"• <b>{safe_name}</b> (<code>{safe_id}</code>) — {safe_plan}")
+            lines.append(f"  Expires: <code>{safe_exp}</code> | Seen: {safe_last}")
         lines.append("")
 
     if pending_users:
         lines.append("🔒 <b>Visitors (No Key / Pending):</b>")
         for cid, u in pending_users[-10:]:
-            uname = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
-            last = u.get("last_active", "N/A")
-            lines.append(f"• <b>{uname}</b> (ID: <code>{cid}</code>) — Last seen: {last}")
+            raw_name = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
+            safe_name = html.escape(str(raw_name))
+            safe_id = html.escape(str(cid))
+            safe_last = html.escape(str(u.get('last_active', 'N/A')))
+            lines.append(f"• <b>{safe_name}</b> (ID: <code>{safe_id}</code>) — Last seen: {safe_last}")
         lines.append("")
 
     if expired_users:
         lines.append("⏳ <b>Expired Accounts:</b>")
         for cid, u in expired_users[-5:]:
-            uname = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
-            lines.append(f"• <b>{uname}</b> (<code>{cid}</code>) — Expired: {u.get('expires_at')}")
+            raw_name = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
+            safe_name = html.escape(str(raw_name))
+            safe_id = html.escape(str(cid))
+            safe_exp = html.escape(str(u.get('expires_at', 'N/A')))
+            lines.append(f"• <b>{safe_name}</b> (<code>{safe_id}</code>) — Expired: {safe_exp}")
         lines.append("")
 
     if revoked_users:
         lines.append("🚫 <b>Revoked / Banned Users:</b>")
         for cid, u in revoked_users[-5:]:
-            uname = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
-            lines.append(f"• <b>{uname}</b> (<code>{cid}</code>) — Revoked")
+            raw_name = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
+            safe_name = html.escape(str(raw_name))
+            safe_id = html.escape(str(cid))
+            lines.append(f"• <b>{safe_name}</b> (<code>{safe_id}</code>) — Revoked")
         lines.append("")
 
     lines.append("<b>Admin Quick Actions:</b>")
-    lines.append("• Terminate user: <code>/revoke &lt;user_id&gt;</code>")
-    lines.append("• Grant access: <code>/grant &lt;user_id&gt; 30d</code>")
+    lines.append("• Terminate user: <code>/revoke 123456789</code>")
+    lines.append("• Grant access: <code>/grant 123456789 30d</code>")
 
     return "\n".join(lines).strip()
 
@@ -450,14 +484,14 @@ def list_keys_report() -> str:
     if unused:
         lines.append("<b>Available Keys (Ready to distribute):</b>")
         for k in unused[-10:]:
-            note_str = f" ({k['note']})" if k.get("note") else ""
-            lines.append(f"• <code>{k['key']}</code> — <b>{k['label']}</b>{note_str}")
+            note_str = f" ({html.escape(k['note'])})" if k.get("note") else ""
+            lines.append(f"• <code>{html.escape(k['key'])}</code> — <b>{html.escape(k['label'])}</b>{note_str}")
         lines.append("")
 
     if redeemed:
         lines.append("<b>Recently Redeemed:</b>")
         for k in redeemed[-5:]:
-            lines.append(f"• <code>{k['key']}</code> — Used by <code>{k.get('used_by')}</code> on {k.get('used_at')}")
+            lines.append(f"• <code>{html.escape(k['key'])}</code> — Used by <code>{html.escape(str(k.get('used_by')))}</code> on {html.escape(str(k.get('used_at')))}")
 
     return "\n".join(lines).strip()
 
@@ -466,16 +500,16 @@ def get_user_plan_report(chat_id: int | str) -> str:
     """
     Formats plan status for a user viewing /myplan.
     """
-    if is_admin(chat_id):
+    clean_id = _clean_target(str(chat_id))
+    if is_admin(clean_id):
         return (
             "👑 <b>Account Status: Master Administrator</b>\n\n"
             "• <b>Privilege:</b> Permanent Full Access\n"
-            "• <b>Admin Controls:</b> <code>/genkey</code>, <code>/users</code>, <code>/revoke</code>, <code>/grant</code>, <code>/keys</code>, <code>/broadcast</code>"
+            "• <b>Admin Controls:</b> <code>/genkey</code>, <code>/users</code>, <code>/revoke</code>, <code>/unban</code>, <code>/grant</code>, <code>/keys</code>, <code>/broadcast</code>"
         )
 
     _load_store()
-    chat_id_str = str(chat_id)
-    user = _STORE["users"].get(chat_id_str)
+    user = _STORE["users"].get(clean_id)
 
     if not user:
         return (
@@ -493,7 +527,7 @@ def get_user_plan_report(chat_id: int | str) -> str:
     if expires_ts and time.time() > expires_ts:
         return (
             f"⏳ <b>Account Status: Expired</b>\n\n"
-            f"Your subscription expired on <code>{user.get('expires_at')}</code>.\n"
+            f"Your subscription expired on <code>{html.escape(str(user.get('expires_at')))}</code>.\n"
             f"To renew, redeem a new key with <code>/redeem &lt;NEW_KEY&gt;</code>."
         )
 
@@ -506,9 +540,9 @@ def get_user_plan_report(chat_id: int | str) -> str:
 
     return (
         f"✅ <b>VIP Account Active</b>\n\n"
-        f"• <b>Plan:</b> {user.get('plan_label')}\n"
-        f"• <b>Expires on:</b> <code>{user.get('expires_at')}</code>\n"
-        f"• <b>Key Code:</b> <code>{user.get('key_used')}</code>\n\n"
+        f"• <b>Plan:</b> {html.escape(str(user.get('plan_label')))}\n"
+        f"• <b>Expires on:</b> <code>{html.escape(str(user.get('expires_at')))}</code>\n"
+        f"• <b>Key Code:</b> <code>{html.escape(str(user.get('key_used')))}</code>\n\n"
         f"You have full access to all Forex, Crypto & Memecoin signals!"
     )
 
@@ -526,7 +560,7 @@ def get_all_active_chat_ids() -> list[int]:
             exp_ts = u.get("expires_ts")
             if not exp_ts or exp_ts > time.time():
                 try:
-                    ids.add(int(cid_str))
+                    ids.add(int(_clean_target(cid_str)))
                 except ValueError:
                     pass
     return list(ids)

@@ -153,6 +153,15 @@ class TestDirectGrant:
         assert auth is True
         assert status == "active"
 
+    def test_grant_with_angle_brackets(self):
+        ok, msg = grant_user("<5371081300>", "7d")
+        assert ok is True
+        assert "5371081300" in msg
+        assert "<5371081300>" not in msg
+        auth, status = is_user_authorized(5371081300)
+        assert auth is True
+        assert status == "active"
+
 
 class TestReports:
     def test_list_users_report(self):
