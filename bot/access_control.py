@@ -547,20 +547,36 @@ def get_user_plan_report(chat_id: int | str) -> str:
     )
 
 
-def get_all_active_chat_ids() -> list[int]:
+def get_broadcast_recipients(only_vip: bool = False) -> list[int]:
     """
-    Returns list of all active chat IDs for broadcasting.
+    Returns list of chat IDs for broadcasting announcements.
+    If only_vip is False, broadcasts to ALL tracked users (VIPs, Visitors, Expired) except Revoked.
     """
     _load_store()
     ids = set()
     ids.add(ADMIN_CHAT_ID)
 
     for cid_str, u in _STORE["users"].items():
-        if u.get("status") == "active":
-            exp_ts = u.get("expires_ts")
-            if not exp_ts or exp_ts > time.time():
-                try:
-                    ids.add(int(_clean_target(cid_str)))
-                except ValueError:
-                    pass
+        st = u.get("status", "pending")
+        if st == "revoked":
+            continue
+
+        if only_vip:
+            if st == "active":
+                exp_ts = u.get("expires_ts")
+                if not exp_ts or exp_ts > time.time():
+                    try:
+                        ids.add(int(_clean_target(cid_str)))
+                    except ValueError:
+                        pass
+        else:
+            try:
+                ids.add(int(_clean_target(cid_str)))
+            except ValueError:
+                pass
+
     return list(ids)
+
+
+def get_all_active_chat_ids() -> list[int]:
+    return get_broadcast_recipients(only_vip=False)

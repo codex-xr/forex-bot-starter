@@ -1,3 +1,4 @@
+import html
 import sys
 import time
 
@@ -200,17 +201,24 @@ def handle_message(message: dict) -> None:
                 if len(parts) < 2:
                     send_telegram_message("⚠️ Usage: <code>/broadcast &lt;message text&gt;</code>", chat_id=chat_id)
                     return
-                broadcast_text = "📢 <b>ADMIN ANNOUNCEMENT</b>\n\n" + raw_text[len(parts[0]):].strip()
-                active_ids = get_all_active_chat_ids()
+
+                msg_body = raw_text[len(parts[0]):].strip()
+                if msg_body.startswith("<") and msg_body.endswith(">"):
+                    msg_body = msg_body[1:-1].strip()
+
+                safe_msg = html.escape(msg_body)
+                broadcast_text = f"📢 <b>ADMIN ANNOUNCEMENT</b>\n\n{safe_msg}"
+
+                recipient_ids = get_all_active_chat_ids()
                 sent_count = 0
-                for cid in active_ids:
+                for cid in recipient_ids:
                     try:
                         send_telegram_message(broadcast_text, chat_id=cid)
                         sent_count += 1
                         time.sleep(0.05)
                     except Exception as e:
                         print(f"Failed broadcast to {cid}: {e}")
-                send_telegram_message(f"✅ Broadcast sent to <b>{sent_count}</b> active users.", chat_id=chat_id)
+                send_telegram_message(f"✅ Broadcast sent to <b>{sent_count}</b> users.", chat_id=chat_id)
                 return
 
         # -------------------------------------------------------------
