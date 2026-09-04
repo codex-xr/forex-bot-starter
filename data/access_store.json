@@ -1,0 +1,28 @@
+{
+  "keys": {
+    "VIP-13482A-30D": {
+      "key": "VIP-13482A-30D",
+      "days": 30,
+      "label": "30 Days",
+      "created_at": "2026-09-04 03:27:52 UTC",
+      "note": "",
+      "status": "redeemed",
+      "used_by": "4321",
+      "used_at": "2026-09-04 03:27:52 UTC"
+    }
+  },
+  "users": {
+    "4321": {
+      "chat_id": "4321",
+      "username": "plan_tester",
+      "first_name": "User",
+      "plan_label": "30 Days",
+      "activated_at": "2026-09-04 03:27:52 UTC",
+      "expires_at": "2026-10-04 03:27:52 UTC",
+      "expires_ts": 1791084472.269294,
+      "status": "active",
+      "key_used": "VIP-13482A-30D",
+      "last_active": "2026-09-04 03:27:52 UTC"
+    }
+  }
+}

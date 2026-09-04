@@ -4,6 +4,18 @@ import time
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+from bot.access_control import (
+    is_admin,
+    is_user_authorized,
+    generate_key,
+    redeem_key,
+    revoke_user,
+    grant_user,
+    list_users_report,
+    list_keys_report,
+    get_user_plan_report,
+    get_all_active_chat_ids,
+)
 from bot.autopilot import autopilot
 from bot.news_engine import format_news_summary
 from bot.session_bot import build_session_message
@@ -27,53 +39,214 @@ COMMANDS = {
 }
 
 
-HELP_TEXT = """🔥 <b>Forex, Crypto & Memecoin Signal Bot</b>
+USER_HELP_TEXT = """🔥 <b>Forex, Crypto & Memecoin Signal Bot</b>
 
-🤖 <b>Auto-Pilot 24/7 (Single-Pair Alerts):</b>
-• <code>/autopilot</code> — View Auto-Pilot status & recent hits
-• <code>/autopilot on</code> — Activate 24/7 background signal hunting
-• <code>/autopilot off</code> — Pause background monitoring
+📈 <b>Forex & Commodities Scans:</b>
+• <code>/f1</code> — Forex Majors (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD)
+• <code>/f2</code> — Crosses & Gold (NZDUSD, EURGBP, EURJPY, GBPJPY, Gold, US30)
+
+🚀 <b>Crypto Market Scans:</b>
+• <code>/c1</code> — Major Cryptos (BTC, ETH, SOL, XRP, DOGE, ADA)
+• <code>/c2</code> — High-Momentum Altcoins (BNB, AVAX, LINK, SUI, NEAR, LTC)
+
+🐶🐸 <b>High-Volatility Memecoin Scans:</b>
+• <code>/m1</code> — Top Memes (WIF, PEPE, SHIB, BONK, FLOKI, BRETT, ANSEM)
+• <code>/m2</code> — Trending Memes (TRUMP, BOME, PENGU, MOG, PEOPLE, ELON)
 
 📰 <b>Breaking News & Catalysts:</b>
 • <code>/news</code> — Real-time Crypto, Trump & Macro Sentiment Monitor
 
-📈 <b>Manual Forex & Commodities Scans:</b>
-• <code>/f1</code> — Forex Majors (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD)
-• <code>/f2</code> — Crosses & Gold (NZDUSD, EURGBP, EURJPY, GBPJPY, Gold, US30)
+🤖 <b>Auto-Pilot 24/7 Alerts:</b>
+• <code>/autopilot</code> — View Auto-Pilot status
+• <code>/autopilot on</code> — Activate 24/7 background signal hunting
+• <code>/autopilot off</code> — Pause background monitoring
 
-🚀 <b>Manual Crypto Market Scans:</b>
-• <code>/c1</code> — Major Cryptos (BTC, ETH, SOL, XRP, DOGE, ADA)
-• <code>/c2</code> — High-Momentum Altcoins (BNB, AVAX, LINK, SUI, NEAR, LTC)
-
-🐶🐸 <b>Manual High-Volatility Memecoin Scans:</b>
-• <code>/m1</code> — Top Memes (WIF, PEPE, SHIB, BONK, FLOKI, BRETT, ANSEM)
-• <code>/m2</code> — Trending & Narrative Memes (TRUMP, BOME, PENGU, MOG, PEOPLE, ELON)
-
-ℹ️ <b>Info:</b>
+ℹ️ <b>Account:</b>
+• <code>/myplan</code> — View your VIP subscription status
 • <code>/status</code> — Bot Health & Active Status
 • <code>/help</code> — Show this menu
+"""
+
+ADMIN_HELP_TEXT = USER_HELP_TEXT + """
+👑 <b>Admin Control Panel:</b>
+• <code>/genkey &lt;duration&gt;</code> — Generate VIP Key (e.g. <code>/genkey 30d</code>, <code>/genkey 7d</code>, <code>/genkey lifetime</code>)
+• <code>/users</code> — View all registered users, plans & stats
+• <code>/revoke &lt;user_id&gt;</code> — Terminate/ban a user's access
+• <code>/grant &lt;user_id&gt; &lt;duration&gt;</code> — Directly grant access without key
+• <code>/keys</code> — View available & redeemed keys
+• <code>/broadcast &lt;message&gt;</code> — Send announcement to all active users
+"""
+
+UNAUTHORIZED_HELP_TEXT = """🔒 <b>Forex, Crypto & Memecoin Signal Bot</b>
+
+<i>This is a private VIP signal system. Access is restricted to authorized accounts only.</i>
+
+🔑 <b>Have an Activation Key?</b>
+Activate your account instantly with:
+👉 <code>/redeem &lt;YOUR_KEY&gt;</code>
+<i>(Example: <code>/redeem VIP-8842-30D</code>)</i>
+
+ℹ️ <b>Available Commands:</b>
+• <code>/redeem &lt;KEY&gt;</code> — Activate your VIP access
+• <code>/myplan</code> — Check subscription status
+• <code>/help</code> — Show this message
+
+<i>To obtain an activation key, please contact the Administrator.</i>
 """
 
 
 def handle_message(message: dict) -> None:
     chat_id = message.get("chat", {}).get("id")
+    user_info = message.get("from", {})
     raw_text = (message.get("text") or "").strip()
     text = raw_text.lower()
 
     if not chat_id or not text:
         return
 
-    parts = text.split()
-    command = parts[0]
+    parts = raw_text.split()
+    command = parts[0].lower()
     subcmd = parts[1] if len(parts) > 1 else ""
 
-    print(f"Received command '{raw_text}' from chat {chat_id}")
+    print(f"Received command '{raw_text}' from chat {chat_id} (@{user_info.get('username')})")
 
     try:
+        # -------------------------------------------------------------
+        # 1. Public Account & Help Commands (Always Accessible)
+        # -------------------------------------------------------------
         if command in {"/start", "/help"}:
-            send_telegram_message(HELP_TEXT, chat_id=chat_id)
+            is_auth, _ = is_user_authorized(chat_id, user_info)
+            if is_admin(chat_id):
+                send_telegram_message(ADMIN_HELP_TEXT, chat_id=chat_id)
+            elif is_auth:
+                send_telegram_message(USER_HELP_TEXT, chat_id=chat_id)
+            else:
+                send_telegram_message(UNAUTHORIZED_HELP_TEXT, chat_id=chat_id)
             return
 
+        if command == "/redeem":
+            if not subcmd:
+                send_telegram_message(
+                    "⚠️ Please provide an activation key.
+
+Usage: <code>/redeem &lt;YOUR_KEY&gt;</code>
+Example: <code>/redeem VIP-A1B2-30D</code>",
+                    chat_id=chat_id,
+                )
+                return
+            ok, msg = redeem_key(chat_id, user_info, subcmd)
+            send_telegram_message(msg, chat_id=chat_id)
+            return
+
+        if command in {"/myplan", "/account", "/plan"}:
+            send_telegram_message(get_user_plan_report(chat_id), chat_id=chat_id)
+            return
+
+        # -------------------------------------------------------------
+        # 2. Admin Only Commands
+        # -------------------------------------------------------------
+        if command in {"/genkey", "/users", "/revoke", "/ban", "/grant", "/keys", "/broadcast"}:
+            if not is_admin(chat_id):
+                send_telegram_message("🚫 <b>Access Denied:</b> This command is reserved for the Administrator.", chat_id=chat_id)
+                return
+
+            if command == "/genkey":
+                dur = subcmd if subcmd else "30d"
+                note = " ".join(parts[2:]) if len(parts) > 2 else ""
+                key_code, label = generate_key(dur, note)
+                msg = (
+                    f"🔑 <b>New VIP Activation Key Generated!</b>
+
+"
+                    f"• <b>Key:</b> <code>{key_code}</code>
+"
+                    f"• <b>Duration:</b> <b>{label}</b>
+
+"
+                    f"<i>Send this key to your user. They can activate it with:</i>
+"
+                    f"<code>/redeem {key_code}</code>"
+                )
+                send_telegram_message(msg, chat_id=chat_id)
+                return
+
+            if command in {"/users", "/subscribers", "/members"}:
+                send_telegram_message(list_users_report(), chat_id=chat_id)
+                return
+
+            if command == "/keys":
+                send_telegram_message(list_keys_report(), chat_id=chat_id)
+                return
+
+            if command in {"/revoke", "/ban"}:
+                if not subcmd:
+                    send_telegram_message("⚠️ Please specify user ID or username to revoke.
+
+Usage: <code>/revoke &lt;user_id or @username&gt;</code>", chat_id=chat_id)
+                    return
+                ok, msg = revoke_user(subcmd)
+                send_telegram_message(msg, chat_id=chat_id)
+                return
+
+            if command == "/grant":
+                if not subcmd:
+                    send_telegram_message("⚠️ Usage: <code>/grant &lt;user_id or @username&gt; [duration]</code>
+Example: <code>/grant 123456789 30d</code>", chat_id=chat_id)
+                    return
+                dur = parts[2] if len(parts) > 2 else "30d"
+                ok, msg = grant_user(subcmd, dur)
+                send_telegram_message(msg, chat_id=chat_id)
+                return
+
+            if command == "/broadcast":
+                if len(parts) < 2:
+                    send_telegram_message("⚠️ Usage: <code>/broadcast &lt;message text&gt;</code>", chat_id=chat_id)
+                    return
+                broadcast_text = "📢 <b>ADMIN ANNOUNCEMENT</b>
+
+" + raw_text[len(parts[0]):].strip()
+                active_ids = get_all_active_chat_ids()
+                sent_count = 0
+                for cid in active_ids:
+                    try:
+                        send_telegram_message(broadcast_text, chat_id=cid)
+                        sent_count += 1
+                        time.sleep(0.05)
+                    except Exception as e:
+                        print(f"Failed broadcast to {cid}: {e}")
+                send_telegram_message(f"✅ Broadcast sent to <b>{sent_count}</b> active users.", chat_id=chat_id)
+                return
+
+        # -------------------------------------------------------------
+        # 3. Gatekeeper: Verify Authorization for All Trading Commands
+        # -------------------------------------------------------------
+        is_auth, auth_status = is_user_authorized(chat_id, user_info)
+        if not is_auth:
+            if auth_status == "revoked":
+                send_telegram_message("🚫 <b>Access Revoked:</b> Your access to this bot has been terminated by the Administrator.", chat_id=chat_id)
+            elif auth_status == "expired":
+                send_telegram_message("⏳ <b>Subscription Expired:</b> Your VIP access has expired. Please redeem a new key with <code>/redeem &lt;KEY&gt;</code> or contact the Admin.", chat_id=chat_id)
+            else:
+                send_telegram_message(
+                    "🔒 <b>Access Restricted</b>
+
+"
+                    "You need an active VIP activation key to use this bot.
+
+"
+                    "To activate access, use:
+"
+                    "👉 <code>/redeem &lt;YOUR_KEY&gt;</code>
+
+"
+                    "<i>To obtain a key, please contact the Administrator.</i>",
+                    chat_id=chat_id,
+                )
+            return
+
+        # -------------------------------------------------------------
+        # 4. Authorized VIP Feature Execution
+        # -------------------------------------------------------------
         if command in {"/news", "/catalyst", "/catalysts"}:
             send_telegram_message("Fetching latest breaking catalysts. One moment...", chat_id=chat_id)
             news_text = format_news_summary(limit=5)
@@ -81,19 +254,23 @@ def handle_message(message: dict) -> None:
             return
 
         if command in {"/autopilot", "/autopilot_status", "/autopilot_on", "/autopilot_off"}:
-            if command == "/autopilot_on" or subcmd == "on":
+            if command == "/autopilot_on" or subcmd.lower() == "on":
                 autopilot.resume()
                 send_telegram_message(
-                    "🟢 <b>Auto-Pilot Activated!</b>\n\n"
+                    "🟢 <b>Auto-Pilot Activated!</b>
+
+"
                     "Hunting 24/7 for single-pair trade setups (65% minimum confidence). "
                     "When a setup triggers, you'll receive a direct single-trade alert.",
                     chat_id=chat_id,
                 )
                 return
-            elif command == "/autopilot_off" or subcmd == "off":
+            elif command == "/autopilot_off" or subcmd.lower() == "off":
                 autopilot.stop()
                 send_telegram_message(
-                    "🔴 <b>Auto-Pilot Paused.</b>\n\nBackground scanning is suspended. Send <code>/autopilot on</code> to resume.",
+                    "🔴 <b>Auto-Pilot Paused.</b>
+
+Background scanning is suspended. Send <code>/autopilot on</code> to resume.",
                     chat_id=chat_id,
                 )
                 return
@@ -104,9 +281,13 @@ def handle_message(message: dict) -> None:
         if command == "/status":
             auto_state = "🟢 ACTIVE" if autopilot.is_active else "🔴 PAUSED"
             send_telegram_message(
-                f"✅ <b>Bot Online & Active</b>\n\n"
-                f"• <b>Commands:</b> <code>/f1</code>, <code>/f2</code>, <code>/c1</code>, <code>/c2</code>, <code>/m1</code>, <code>/m2</code>\n"
-                f"• <b>Auto-Pilot:</b> {auto_state} (65% Gate)\n"
+                f"✅ <b>Bot Online & Active</b>
+
+"
+                f"• <b>Commands:</b> <code>/f1</code>, <code>/f2</code>, <code>/c1</code>, <code>/c2</code>, <code>/m1</code>, <code>/m2</code>
+"
+                f"• <b>Auto-Pilot:</b> {auto_state} (65% Gate)
+"
                 f"• <b>DEX Streamer:</b> Solana ($ANSEM) connected",
                 chat_id=chat_id,
             )
