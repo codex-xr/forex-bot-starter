@@ -10,6 +10,7 @@ from bot.access_control import (
     generate_key,
     redeem_key,
     revoke_user,
+    unban_user,
     grant_user,
     list_users_report,
     list_keys_report,
@@ -72,6 +73,7 @@ ADMIN_HELP_TEXT = USER_HELP_TEXT + """
 • <code>/genkey &lt;duration&gt;</code> — Generate VIP Key (e.g. <code>/genkey 30d</code>, <code>/genkey 7d</code>, <code>/genkey lifetime</code>)
 • <code>/users</code> — View all registered users, plans & stats
 • <code>/revoke &lt;user_id&gt;</code> — Terminate/ban a user's access
+• <code>/unban &lt;user_id&gt;</code> — Restore an account / unban a user
 • <code>/grant &lt;user_id&gt; &lt;duration&gt;</code> — Directly grant access without key
 • <code>/keys</code> — View available & redeemed keys
 • <code>/broadcast &lt;message&gt;</code> — Send announcement to all active users
@@ -142,7 +144,7 @@ def handle_message(message: dict) -> None:
         # -------------------------------------------------------------
         # 2. Admin Only Commands
         # -------------------------------------------------------------
-        if command in {"/genkey", "/users", "/revoke", "/ban", "/grant", "/keys", "/broadcast"}:
+        if command in {"/genkey", "/users", "/revoke", "/ban", "/unban", "/restore", "/grant", "/keys", "/broadcast"}:
             if not is_admin(chat_id):
                 send_telegram_message("🚫 <b>Access Denied:</b> This command is reserved for the Administrator.", chat_id=chat_id)
                 return
@@ -174,6 +176,14 @@ def handle_message(message: dict) -> None:
                     send_telegram_message("⚠️ Please specify user ID or username to revoke.\n\nUsage: <code>/revoke &lt;user_id or @username&gt;</code>", chat_id=chat_id)
                     return
                 ok, msg = revoke_user(subcmd)
+                send_telegram_message(msg, chat_id=chat_id)
+                return
+
+            if command in {"/unban", "/restore"}:
+                if not subcmd:
+                    send_telegram_message("⚠️ Please specify user ID or username to unban.\n\nUsage: <code>/unban &lt;user_id or @username&gt;</code>", chat_id=chat_id)
+                    return
+                ok, msg = unban_user(subcmd)
                 send_telegram_message(msg, chat_id=chat_id)
                 return
 

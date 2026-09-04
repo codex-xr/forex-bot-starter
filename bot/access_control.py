@@ -273,6 +273,40 @@ def revoke_user(target: str) -> tuple[bool, str]:
     return True, f"🚫 Access for <b>{uname}</b> (ID: <code>{found_id}</code>) has been <b>REVOKED & BANNED</b>."
 
 
+
+def unban_user(target: str) -> tuple[bool, str]:
+    """
+    Unbans / restores access for a previously revoked user by Chat ID or @username.
+    """
+    _load_store()
+    target_clean = target.strip().lstrip("@").lower()
+
+    found_id = None
+    for cid, u in _STORE["users"].items():
+        if cid.lower() == target_clean or (u.get("username") and u.get("username").lower() == target_clean):
+            found_id = cid
+            break
+
+    if not found_id:
+        return False, f"User '{target}' not found in the database."
+
+    user = _STORE["users"][found_id]
+    if user.get("status") != "revoked":
+        return False, f"User '{target}' is not revoked (current status: {user.get('status')})."
+
+    expires_ts = user.get("expires_ts")
+    if expires_ts and expires_ts > time.time():
+        user["status"] = "active"
+        status_msg = f"Active access restored (Expires on {user.get('expires_at')})"
+    else:
+        user["status"] = "pending"
+        status_msg = "Unbanned (User can now redeem a key or receive an admin grant)"
+
+    _save_store()
+    uname = f"@{user.get('username')}" if user.get("username") and user.get("username") != "Unknown" else user.get("first_name", found_id)
+    return True, f"✅ Access for <b>{uname}</b> (ID: <code>{found_id}</code>) has been <b>RESTORED</b>.\n• {status_msg}"
+
+
 def grant_user(target: str, duration_str: str = "30d", admin_note: str = "Admin Grant") -> tuple[bool, str]:
     """
     Directly grants or extends access for a user without needing a key.

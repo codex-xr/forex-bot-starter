@@ -7,6 +7,7 @@ from bot.access_control import (
     redeem_key,
     is_user_authorized,
     revoke_user,
+    unban_user,
     grant_user,
     list_users_report,
     list_keys_report,
@@ -113,8 +114,8 @@ class TestKeyGenerationAndRedemption:
         assert "Invalid Activation Key" in msg
 
 
-class TestUserRevocation:
-    def test_revoke_user_by_id(self):
+class TestUserRevocationAndRestore:
+    def test_revoke_and_unban_user(self):
         key, _ = generate_key("30d")
         user_info = {"id": 555666, "username": "bad_actor", "first_name": "Bad"}
         redeem_key(555666, user_info, key)
@@ -130,6 +131,16 @@ class TestUserRevocation:
         auth_after, status = is_user_authorized(555666)
         assert auth_after is False
         assert status == "revoked"
+
+        # Admin restores / unbans user
+        ok_unban, msg_unban = unban_user("555666")
+        assert ok_unban is True
+        assert "RESTORED" in msg_unban
+
+        # Since 30d hasn't expired yet, active status is restored
+        auth_restored, status_restored = is_user_authorized(555666)
+        assert auth_restored is True
+        assert status_restored == "active"
 
 
 class TestDirectGrant:
