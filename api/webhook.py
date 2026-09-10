@@ -47,9 +47,7 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
 
     def do_GET(self):
-        path = self.path.split("?")[0].rstrip("/")
-
-        if path.endswith("/set_webhook"):
+        if "set_webhook" in self.path:
             load_dotenv()
             token = os.getenv("TELEGRAM_BOT_TOKEN")
             if not token:
@@ -85,7 +83,7 @@ class handler(BaseHTTPRequestHandler):
             }, indent=2).encode("utf-8"))
             return
 
-        if path.endswith("/cron"):
+        if "cron" in self.path:
             # 1. Process any due scheduled broadcasts
             executed_broadcasts = []
             try:
