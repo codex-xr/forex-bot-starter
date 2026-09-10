@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import json
 import os
 import sys
@@ -27,6 +28,24 @@ else:
     _IMPORT_ERROR = None
 
 
+def _log_webhook_event(event_type: str, details: dict) -> None:
+    try:
+        url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+        token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+        if not url or not token:
+            return
+        entry = {
+            "time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "event": event_type,
+            "details": details,
+        }
+        headers = {"Authorization": f"Bearer {token}"}
+        requests.post(url, headers=headers, json=["LPUSH", "webhook_debug_logs", json.dumps(entry)], timeout=1.5)
+        requests.post(url, headers=headers, json=["LTRIM", "webhook_debug_logs", 0, 29], timeout=1.0)
+    except Exception:
+        pass
+
+
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
@@ -38,6 +57,16 @@ class handler(BaseHTTPRequestHandler):
             if "callback_query" in update:
                 cb = update["callback_query"]
                 qid = cb.get("id")
+                cdata = cb.get("data")
+                cuser = cb.get("from", {})
+                cchat = cb.get("message", {}).get("chat", {}).get("id")
+                _log_webhook_event("callback_query_received", {
+                    "id": qid,
+                    "data": cdata,
+                    "from_id": cuser.get("id"),
+                    "username": cuser.get("username"),
+                    "chat_id": cchat,
+                })
                 if qid:
                     resp_payload = {
                         "method": "answerCallbackQuery",
@@ -45,10 +74,21 @@ class handler(BaseHTTPRequestHandler):
                     }
                 if handle_callback_query:
                     handle_callback_query(cb)
+                    _log_webhook_event("callback_query_handled", {"id": qid, "data": cdata})
             elif "message" in update and handle_message:
-                handle_message(update["message"])
+                msg = update["message"]
+                _log_webhook_event("message_received", {
+                    "text": msg.get("text"),
+                    "from_id": msg.get("from", {}).get("id"),
+                    "username": msg.get("from", {}).get("username"),
+                    "chat_id": msg.get("chat", {}).get("id"),
+                })
+                handle_message(msg)
+                _log_webhook_event("message_handled", {"text": msg.get("text")})
         except Exception as exc:
+            err_str = traceback.format_exc()
             print(f"[Vercel Webhook] Error: {exc}")
+            _log_webhook_event("webhook_error", {"error": str(exc), "traceback": err_str})
 
         self.send_response(200)
         self.send_header("Content-type", "application/json")
@@ -56,6 +96,26 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(resp_payload).encode("utf-8"))
 
     def do_GET(self):
+        if "debug" in self.path or "logs" in self.path:
+            load_dotenv()
+            logs = []
+            try:
+                url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+                token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+                if url and token:
+                    r = requests.post(url, headers={"Authorization": f"Bearer {token}"}, json=["LRANGE", "webhook_debug_logs", 0, 29], timeout=3)
+                    if r.status_code == 200:
+                        raw_items = r.json().get("result", [])
+                        logs = [json.loads(x) if isinstance(x, str) else x for x in raw_items]
+            except Exception as e:
+                logs = [{"error": str(e)}]
+
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"total_logs": len(logs), "logs": logs}, indent=2).encode("utf-8"))
+            return
+
         if "set_webhook" in self.path:
             load_dotenv()
             token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -73,7 +133,11 @@ class handler(BaseHTTPRequestHandler):
             try:
                 tg_res = requests.post(
                     f"https://api.telegram.org/bot{token}/setWebhook",
-                    json={"url": webhook_url},
+                    json={
+                        "url": webhook_url,
+                        "allowed_updates": ["message", "callback_query"],
+                        "drop_pending_updates": True,
+                    },
                     timeout=15,
                 ).json()
                 cmds_res = register_telegram_commands()
