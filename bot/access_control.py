@@ -46,7 +46,7 @@ def _load_from_cloud() -> dict | None:
         return None
     try:
         headers = {"Authorization": f"Bearer {token}"}
-        res = requests.get(f"{url}/get/access_store_data", headers=headers, timeout=4)
+        res = requests.get(f"{url}/get/access_store_data", headers=headers, timeout=2)
         if res.status_code == 200:
             val = res.json().get("result")
             if val:
@@ -71,7 +71,7 @@ def _save_to_cloud(data: dict) -> bool:
             url,
             headers=headers,
             json=["SET", "access_store_data", json.dumps(data)],
-            timeout=4,
+            timeout=2,
         )
         return res.status_code == 200
     except Exception as exc:

@@ -157,7 +157,7 @@ def _load_from_cloud() -> PaperStore | None:
         resp = requests.get(
             f"{url}/get/{REDIS_PAPER_KEY}",
             headers={"Authorization": f"Bearer {token}"},
-            timeout=4,
+            timeout=2,
         )
         if resp.status_code == 200:
             val = resp.json().get("result")
@@ -181,7 +181,7 @@ def _save_to_cloud(store: PaperStore) -> bool:
             f"{url}/set/{REDIS_PAPER_KEY}",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "text/plain"},
             data=payload,
-            timeout=4,
+            timeout=2,
         )
         return resp.status_code == 200
     except Exception as exc:

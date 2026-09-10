@@ -279,22 +279,6 @@ def handle_callback_query(callback_query: dict) -> None:
 
 
 def handle_message(message: dict) -> None:
-    # Process any due scheduled broadcasts
-    try:
-        process_due_broadcasts()
-    except Exception as sched_err:
-        print(f"[ScheduledBroadcast] Process error: {sched_err}")
-
-    # Check open paper trades against real-time market prices
-    chat_id = message.get("chat", {}).get("id")
-    try:
-        trade_alerts = check_open_trades()
-        for alert_msg in trade_alerts:
-            if chat_id:
-                send_telegram_message(alert_msg, chat_id=chat_id)
-    except Exception as trade_err:
-        print(f"[PaperCheck] Error: {trade_err}")
-
     chat_id = message.get("chat", {}).get("id")
     user_info = message.get("from", {})
     raw_text = (message.get("text") or "").strip()
