@@ -43,6 +43,7 @@ def _fmt_price(val: float | None) -> str:
 class PaperSettings:
     virtual_balance: float = 10000.0
     trade_size_usd: float = 1000.0
+    leverage: float = 1.0
 
 
 @dataclass
@@ -58,6 +59,7 @@ class PaperPosition:
     sl: float
     size_usd: float
     units: float
+    leverage: float = 1.0
     status: str = "OPEN"
 
 
@@ -78,6 +80,7 @@ class PaperTradeHistory:
     size_usd: float
     duration_seconds: float
     date_str: str  # "YYYY-MM-DD" in UTC
+    leverage: float = 1.0
 
 
 class PaperStore:
@@ -100,6 +103,7 @@ class PaperStore:
         store.settings = PaperSettings(
             virtual_balance=float(settings_data.get("virtual_balance", 10000.0)),
             trade_size_usd=float(settings_data.get("trade_size_usd", 1000.0)),
+            leverage=float(settings_data.get("leverage", 1.0)),
         )
 
         positions_data = data.get("positions", {})
@@ -116,6 +120,7 @@ class PaperStore:
                 sl=float(pos_dict.get("sl", 0.0)),
                 size_usd=float(pos_dict.get("size_usd", 1000.0)),
                 units=float(pos_dict.get("units", 0.0)),
+                leverage=float(pos_dict.get("leverage", 1.0)),
                 status=pos_dict.get("status", "OPEN"),
             )
 
@@ -138,6 +143,7 @@ class PaperStore:
                     size_usd=float(h_dict.get("size_usd", 1000.0)),
                     duration_seconds=float(h_dict.get("duration_seconds", 0.0)),
                     date_str=h_dict.get("date_str", ""),
+                    leverage=float(h_dict.get("leverage", 1.0)),
                 )
             )
 
@@ -247,6 +253,24 @@ def set_trade_size(new_size: float) -> tuple[bool, str]:
     return True, f"✅ <b>Default Trade Size Updated:</b> <code>${store.settings.trade_size_usd:,.2f}</code> per trade"
 
 
+def set_leverage(new_leverage: float) -> tuple[bool, str]:
+    if new_leverage < 1.0 or new_leverage > 125.0:
+        return False, "❌ Leverage must be between 1x and 125x (e.g. <code>/setleverage 10x</code>)."
+
+    store = _load_paper_store()
+    store.settings.leverage = round(new_leverage, 1)
+    _save_paper_store(store)
+    lev_str = f"{store.settings.leverage:g}x"
+    buying_power = store.settings.trade_size_usd * store.settings.leverage
+    return True, (
+        f"⚙️ <b>Leverage Multiplier Updated!</b>\n\n"
+        f"• <b>New Leverage:</b> <code>{lev_str}</code>\n"
+        f"• <b>Margin Per Trade:</b> <code>${store.settings.trade_size_usd:,.2f}</code>\n"
+        f"• <b>Total Buying Power:</b> <code>${buying_power:,.2f}</code>\n\n"
+        f"<i>All newly entered paper trades will now execute at <b>{lev_str}</b> leverage.</i>"
+    )
+
+
 def get_paper_settings() -> dict:
     store = _load_paper_store()
     return asdict(store.settings)
@@ -259,9 +283,10 @@ def open_paper_trade(
     sl: float,
     tp1: float,
     size_usd: float | None = None,
+    leverage: float | None = None,
 ) -> tuple[bool, str, dict | None]:
     """
-    Opens a simulated paper trade with exact TP1 and SL limits.
+    Opens a simulated paper trade with exact TP1 and SL limits and leverage.
     """
     store = _load_paper_store()
 
@@ -287,7 +312,9 @@ def open_paper_trade(
             )
 
     trade_size = size_usd or store.settings.trade_size_usd
-    units = trade_size / entry_price
+    trade_lev = leverage or store.settings.leverage
+    notional_size = trade_size * trade_lev
+    units = notional_size / entry_price
     display_sym = DISPLAY_NAMES.get(symbol, symbol.replace("_", "/"))
 
     now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -307,6 +334,7 @@ def open_paper_trade(
         sl=round(sl, 8),
         size_usd=round(trade_size, 2),
         units=units,
+        leverage=trade_lev,
         status="OPEN",
     )
 
@@ -314,11 +342,13 @@ def open_paper_trade(
     _save_paper_store(store)
 
     dir_emoji = "🟢 LONG" if clean_action == "BUY" else "🔴 SHORT"
+    lev_text = f"{trade_lev:g}x"
     msg = (
         f"🚀 <b>Paper Trade Entered!</b>\n\n"
         f"• <b>Asset:</b> <code>{display_sym}</code> ({dir_emoji})\n"
+        f"• <b>Leverage:</b> <code>{lev_text}</code>\n"
         f"• <b>Entry Price:</b> <code>{_fmt_price(entry_price)}</code>\n"
-        f"• <b>Position Size:</b> <code>${trade_size:,.2f}</code> ({units:.6g} units)\n"
+        f"• <b>Position Margin:</b> <code>${trade_size:,.2f}</code> (Notional: <code>${notional_size:,.2f}</code>)\n"
         f"• <b>Take Profit (TP1):</b> <code>{_fmt_price(tp1)}</code>\n"
         f"• <b>Stop Loss (SL):</b> <code>{_fmt_price(sl)}</code>\n"
         f"• <b>Rule:</b> Pure 1:1 TP1/SL execution (Zero Break-Even adjustment)\n\n"
@@ -334,7 +364,7 @@ def close_paper_trade(
     reason: str = "MANUAL_CLOSE",
 ) -> tuple[bool, str, dict | None]:
     """
-    Closes an open paper position, calculates realized PnL, updates virtual balance,
+    Closes an open paper position, calculates realized PnL with leverage, updates virtual balance,
     and archives the trade into history.
     """
     store = _load_paper_store()
@@ -361,13 +391,13 @@ def close_paper_trade(
 
     duration = max(1.0, exit_ts - position.entry_ts)
 
-    # Calculate PnL
+    # Calculate PnL with leverage
     if position.action == "BUY":
-        pnl_pct = ((exit_price - position.entry_price) / position.entry_price) * 100.0
         pnl_usd = position.units * (exit_price - position.entry_price)
     else:  # SELL
-        pnl_pct = ((position.entry_price - exit_price) / position.entry_price) * 100.0
         pnl_usd = position.units * (position.entry_price - exit_price)
+
+    pnl_pct = (pnl_usd / position.size_usd) * 100.0 if position.size_usd > 0 else 0.0
 
     pnl_usd = round(pnl_usd, 2)
     pnl_pct = round(pnl_pct, 2)
@@ -392,6 +422,7 @@ def close_paper_trade(
         size_usd=position.size_usd,
         duration_seconds=duration,
         date_str=date_str,
+        leverage=position.leverage,
     )
 
     del store.positions[pos_id]
@@ -400,6 +431,7 @@ def close_paper_trade(
 
     pnl_emoji = "🟢" if pnl_usd >= 0 else "🔴"
     pnl_sign = "+" if pnl_usd >= 0 else ""
+    lev_str = f" ({position.leverage:g}x)" if position.leverage > 1.0 else ""
 
     reason_labels = {
         "TP1_HIT": "🎯 Take Profit 1 Reached",
@@ -410,10 +442,10 @@ def close_paper_trade(
 
     msg = (
         f"{pnl_emoji} <b>Paper Trade Closed ({reason_text})</b>\n\n"
-        f"• <b>Asset:</b> <code>{position.display_symbol}</code> ({position.action})\n"
+        f"• <b>Asset:</b> <code>{position.display_symbol}</code> ({position.action}{lev_str})\n"
         f"• <b>Entry Price:</b> <code>{_fmt_price(position.entry_price)}</code>\n"
         f"• <b>Exit Price:</b> <code>{_fmt_price(exit_price)}</code>\n"
-        f"• <b>Realized PnL:</b> <b>{pnl_sign}${pnl_usd:,.2f}</b> ({pnl_sign}{pnl_pct:.2f}%)\n"
+        f"• <b>Realized ROE / PnL:</b> <b>{pnl_sign}${pnl_usd:,.2f}</b> ({pnl_sign}{pnl_pct:.2f}%)\n"
         f"• <b>New Balance:</b> <code>${store.settings.virtual_balance:,.2f}</code>\n"
         f"• <b>Duration:</b> <code>{int(duration // 60)}m {int(duration % 60)}s</code>"
     )
@@ -511,13 +543,15 @@ def get_status_report() -> tuple[str, dict | None]:
 
     balance = store.settings.virtual_balance
     trade_size = store.settings.trade_size_usd
+    leverage = store.settings.leverage
+    buying_power = trade_size * leverage
     open_count = len(store.positions)
 
     lines = [
         "📊 <b>PAPER TRADING LIVE DASHBOARD</b>",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 <b>Virtual Balance:</b> <code>${balance:,.2f}</code>",
-        f"⚙️ <b>Trade Size:</b> <code>${trade_size:,.2f}</code> per entry",
+        f"⚙️ <b>Trade Margin:</b> <code>${trade_size:,.2f}</code> | <b>Leverage:</b> <code>{leverage:g}x</code> (Buying Power: <code>${buying_power:,.2f}</code>)",
         f"⚡ <b>Active Positions:</b> <code>{open_count}</code>",
         "",
     ]
@@ -542,13 +576,13 @@ def get_status_report() -> tuple[str, dict | None]:
                 pass
 
             if pos.action == "BUY":
-                pnl_pct = ((curr_price - pos.entry_price) / pos.entry_price) * 100.0
                 pnl_usd = pos.units * (curr_price - pos.entry_price)
-                side_str = "🟢 LONG"
             else:
-                pnl_pct = ((pos.entry_price - curr_price) / pos.entry_price) * 100.0
                 pnl_usd = pos.units * (pos.entry_price - curr_price)
-                side_str = "🔴 SHORT"
+
+            pnl_pct = (pnl_usd / pos.size_usd) * 100.0 if pos.size_usd > 0 else 0.0
+            lev_tag = f" ({pos.leverage:g}x)" if pos.leverage > 1.0 else ""
+            side_str = f"🟢 LONG{lev_tag}" if pos.action == "BUY" else f"🔴 SHORT{lev_tag}"
 
             total_unrealized_usd += pnl_usd
             pnl_sign = "+" if pnl_usd >= 0 else ""
@@ -557,7 +591,7 @@ def get_status_report() -> tuple[str, dict | None]:
             lines.append(f"<b>{idx}. {pos.display_symbol}</b> ({side_str})")
             lines.append(f"   • Entry: <code>{_fmt_price(pos.entry_price)}</code> | Current: <code>{_fmt_price(curr_price)}</code>")
             lines.append(f"   • TP1: <code>{_fmt_price(pos.tp1)}</code> | SL: <code>{_fmt_price(pos.sl)}</code>")
-            lines.append(f"   • Unrealized PnL: {pnl_icon} <b>{pnl_sign}${pnl_usd:,.2f}</b> ({pnl_sign}{pnl_pct:.2f}%)")
+            lines.append(f"   • Unrealized ROE: {pnl_icon} <b>{pnl_sign}${pnl_usd:,.2f}</b> ({pnl_sign}{pnl_pct:.2f}%)")
             lines.append("")
 
             close_buttons.append({

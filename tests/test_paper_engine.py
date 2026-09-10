@@ -11,6 +11,7 @@ from bot.paper_engine import (
     PaperTradeHistory,
     set_virtual_balance,
     set_trade_size,
+    set_leverage,
     get_paper_settings,
     open_paper_trade,
     close_paper_trade,
@@ -53,6 +54,22 @@ class TestPaperSettings:
         settings = get_paper_settings()
         assert settings["trade_size_usd"] == 500.0
 
+    def test_set_leverage(self):
+        ok, msg = set_leverage(10.0)
+        assert ok is True
+        assert "10x" in msg
+        settings = get_paper_settings()
+        assert settings["leverage"] == 10.0
+
+    def test_invalid_leverage_rejected(self):
+        ok, msg = set_leverage(0.5)
+        assert ok is False
+        assert "between 1x and 125x" in msg
+
+        ok2, msg2 = set_leverage(150.0)
+        assert ok2 is False
+        assert "between 1x and 125x" in msg2
+
     def test_invalid_balance_rejected(self):
         ok, msg = set_virtual_balance(-100.0)
         assert ok is False
@@ -60,6 +77,21 @@ class TestPaperSettings:
 
 
 class TestPaperTradeLifecycle:
+    def test_open_leveraged_trade_success(self):
+        set_trade_size(1000.0)
+        set_leverage(10.0)
+        ok, msg, pos = open_paper_trade("BTC_USD", "BUY", 50000.0, 48000.0, 55000.0)
+        assert ok is True
+        assert "10x" in msg
+        assert pos["leverage"] == 10.0
+        # Units = ($1000 * 10) / $50000 = 0.2 BTC
+        assert pos["units"] == 0.2
+
+        # Close at +10% price gain (55000) -> 100% ROE gain ($1000 profit on $1000 margin)
+        ok_c, _, hist = close_paper_trade(pos["id"], 55000.0, reason="TP1_HIT")
+        assert ok_c is True
+        assert hist["pnl_usd"] == 1000.0
+        assert hist["pnl_pct"] == 100.0
     def test_open_buy_trade_success(self):
         set_trade_size(1000.0)
         ok, msg, pos = open_paper_trade("BTC_USD", "BUY", 60000.0, 58000.0, 63000.0)

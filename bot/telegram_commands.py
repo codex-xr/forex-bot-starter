@@ -34,6 +34,7 @@ from bot.paper_engine import (
     get_trade_history_report,
     set_virtual_balance,
     set_trade_size,
+    set_leverage,
     close_all_open_trades,
     get_paper_settings,
 )
@@ -155,7 +156,8 @@ Tap any button below or type a command to scan the market:
 • <code>/status</code> — Active open trades, live prices & floating PnL
 • <code>/summary</code> — End-of-day performance, daily PnL, best/worst pairs
 • <code>/setbalance &lt;amt&gt;</code> — Set virtual account capital (e.g. <code>/setbalance 10000</code>)
-• <code>/setsize &lt;amt&gt;</code> — Set entry size per trade (e.g. <code>/setsize 500</code>)
+• <code>/setsize &lt;amt&gt;</code> — Set entry margin size per trade (e.g. <code>/setsize 500</code>)
+• <code>/setleverage &lt;multiplier&gt;</code> — Set trade leverage (e.g. <code>/setleverage 10x</code>, <code>/setleverage 20x</code>)
 • <code>/enter &lt;symbol&gt;</code> — Enter a paper trade manually (e.g. <code>/enter BTC</code>)
 • <code>/close &lt;symbol&gt;</code> — Close an active paper trade (or <code>/closeall</code>)
 • <code>/history</code> — View recent closed trade history
@@ -580,6 +582,33 @@ def handle_message(message: dict) -> None:
                 send_telegram_message(msg, chat_id=chat_id)
             except ValueError:
                 send_telegram_message("❌ Invalid size amount. Example: <code>/setsize 500</code>", chat_id=chat_id)
+            return
+
+        if command in {"/setleverage", "/leverage", "/lev", "/setlev"}:
+            if not subcmd:
+                settings = get_paper_settings()
+                lev = settings.get("leverage", 1.0)
+                margin = settings.get("trade_size_usd", 1000.0)
+                send_telegram_message(
+                    f"⚙️ <b>Current Paper Trading Leverage:</b> <code>{lev:g}x</code>\n"
+                    f"• <b>Margin Per Trade:</b> <code>${margin:,.2f}</code>\n"
+                    f"• <b>Total Buying Power:</b> <code>${margin * lev:,.2f}</code>\n\n"
+                    f"To update leverage, send: <code>/setleverage &lt;multiplier&gt;</code>\n"
+                    f"Examples:\n"
+                    f"• <code>/setleverage 10x</code> (10x Leverage)\n"
+                    f"• <code>/setleverage 20x</code> (20x Leverage)\n"
+                    f"• <code>/setleverage 50x</code> (50x Leverage)\n"
+                    f"• <code>/setleverage 1x</code> (1x Spot)",
+                    chat_id=chat_id,
+                )
+                return
+            clean_val = subcmd.lower().replace("x", "").strip()
+            try:
+                val = float(clean_val)
+                ok, msg = set_leverage(val)
+                send_telegram_message(msg, chat_id=chat_id)
+            except ValueError:
+                send_telegram_message("❌ Invalid leverage amount. Example: <code>/setleverage 10x</code>", chat_id=chat_id)
             return
 
         if command in {"/enter", "/paper_enter", "/trade"}:
