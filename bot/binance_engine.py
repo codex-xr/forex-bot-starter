@@ -61,7 +61,7 @@ def fetch_binance_klines(
     symbol: str,
     interval: str = "15m",
     limit: int = 100,
-    timeout: int = 3,
+    timeout: float = 2.0,
 ) -> pd.DataFrame:
     """
     Fetches high-resolution OHLCV candles with Taker Buy Volume from Binance.
@@ -70,7 +70,7 @@ def fetch_binance_klines(
     spot_sym, fut_sym = get_binance_symbol_pair(symbol)
     target_sym = spot_sym or fut_sym or symbol
 
-    for host in BINANCE_SPOT_HOSTS:
+    for host in ["https://data-api.binance.vision", "https://api.binance.com"]:
         try:
             url = f"{host}/api/v3/klines"
             res = _SESSION.get(
@@ -95,6 +95,8 @@ def fetch_binance_klines(
                         })
                     df = pd.DataFrame(rows)
                     return df.dropna().sort_values("time").reset_index(drop=True)
+            elif res.status_code == 400:
+                break
         except Exception:
             continue
 
@@ -130,7 +132,7 @@ def fetch_binance_klines(
     raise RuntimeError(f"Could not fetch Binance klines for {symbol} ({target_sym})")
 
 
-def fetch_binance_derivatives(symbol: str, timeout: int = 3) -> dict:
+def fetch_binance_derivatives(symbol: str, timeout: float = 1.5) -> dict:
     """
     Fetches Open Interest, Funding Rate, and Top Trader Long/Short account ratio.
     """

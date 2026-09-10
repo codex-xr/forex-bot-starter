@@ -31,7 +31,7 @@ def fetch_dex_candles(network: str, pool_address: str, aggregate: int = 15, limi
         url,
         params={"aggregate": aggregate, "limit": min(limit, 1000)},
         headers={"Accept": "application/json"},
-        timeout=20,
+        timeout=3.5,
     )
     if not response.ok:
         raise RuntimeError(f"HTTP {response.status_code} from GeckoTerminal for pool {pool_address}")
@@ -59,7 +59,13 @@ def fetch_live_candles(symbol: str, interval: str = "15min", outputsize: int = 1
     # 1. Specialized Solana DEX Pools (e.g. $ANSEM)
     if symbol in DEX_POOLS:
         network, pool = DEX_POOLS[symbol]
-        return fetch_dex_candles(network, pool, aggregate=15, limit=outputsize)
+        try:
+            return fetch_dex_candles(network, pool, aggregate=15, limit=outputsize)
+        except Exception as dex_err:
+            fallback = Path("data") / f"{symbol.lower()}.csv"
+            if fallback.exists():
+                return load_price_data(fallback)
+            raise RuntimeError(f"DEX fetch failed: {dex_err}")
 
     # 2. Binance Quantitative High-Speed Engine for all Crypto & Memecoins
     if symbol in BINANCE_SYMBOLS:
@@ -76,15 +82,15 @@ def fetch_live_candles(symbol: str, interval: str = "15min", outputsize: int = 1
     load_dotenv()
 
     api_key = os.getenv("TWELVE_DATA_API_KEY")
+    fallback = Path("data") / f"{symbol.lower()}.csv"
     if not api_key:
-        fallback = Path("data") / f"{symbol.lower()}.csv"
         if fallback.exists():
             return load_price_data(fallback)
         raise RuntimeError("TWELVE_DATA_API_KEY is missing and no fallback CSV exists")
 
     api_symbol = SYMBOL_ALIASES.get(symbol, symbol.replace("_", "/"))
 
-    for attempt in range(4):
+    try:
         response = requests.get(
             "https://api.twelvedata.com/time_series",
             params={
@@ -93,32 +99,24 @@ def fetch_live_candles(symbol: str, interval: str = "15min", outputsize: int = 1
                 "outputsize": outputsize,
                 "apikey": api_key,
             },
-            timeout=20,
+            timeout=3.5,
         )
 
-        if response.status_code == 429:
-            time.sleep(8 + attempt * 3)
-            continue
+        if response.status_code == 200:
+            payload = response.json()
+            if "values" in payload and payload["values"]:
+                data = pd.DataFrame(payload["values"])
+                data = data.rename(columns={"datetime": "time"})
+                data["time"] = pd.to_datetime(data["time"], utc=True)
 
-        if not response.ok:
-            raise RuntimeError(f"HTTP {response.status_code} from Twelve Data for {symbol}")
+                for column in ["open", "high", "low", "close"]:
+                    data[column] = pd.to_numeric(data[column], errors="coerce")
 
-        payload = response.json()
+                return data[["time", "open", "high", "low", "close"]].dropna().sort_values("time").reset_index(drop=True)
+    except Exception as td_err:
+        print(f"[MarketData] TwelveData error for {symbol}: {td_err}")
 
-        if "values" not in payload:
-            message = payload.get("message") or payload.get("status") or str(payload)
-            if "minute" in str(message).lower() or "limit" in str(message).lower():
-                time.sleep(8 + attempt * 3)
-                continue
-            raise RuntimeError(f"Twelve Data error for {symbol}: {message}")
+    if fallback.exists():
+        return load_price_data(fallback)
 
-        data = pd.DataFrame(payload["values"])
-        data = data.rename(columns={"datetime": "time"})
-        data["time"] = pd.to_datetime(data["time"], utc=True)
-
-        for column in ["open", "high", "low", "close"]:
-            data[column] = pd.to_numeric(data[column], errors="coerce")
-
-        return data[["time", "open", "high", "low", "close"]].dropna().sort_values("time").reset_index(drop=True)
-
-    raise RuntimeError(f"Twelve Data rate limit exceeded for {symbol} after 3 retries")
+    raise RuntimeError(f"Real-time data temporarily unavailable for {symbol}")

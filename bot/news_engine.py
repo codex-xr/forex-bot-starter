@@ -156,78 +156,85 @@ def analyze_headline_sentiment(title: str, body: str = "") -> tuple[int, str, st
     return net_score, sentiment_label, impact_level, affected
 
 
+import threading
+
 _NEWS_CACHE: list[NewsArticle] = []
 _NEWS_CACHE_TIME: float = 0.0
+_NEWS_LOCK = threading.Lock()
 
 
 def fetch_latest_news(limit: int = 15, force_refresh: bool = False) -> list[NewsArticle]:
     """
     Fetches real-time crypto & macro news from live institutional feeds (CoinTelegraph, Decrypt).
-    Caches results for 60 seconds to optimize performance and prevent rate limiting.
+    Caches results for 120 seconds to optimize performance and prevent rate limiting.
     """
     global _NEWS_CACHE, _NEWS_CACHE_TIME
     import time
     now = time.time()
-    if not force_refresh and (now - _NEWS_CACHE_TIME) < 60.0:
+    if not force_refresh and (now - _NEWS_CACHE_TIME) < 120.0 and _NEWS_CACHE:
         return _NEWS_CACHE[:limit]
 
-    _NEWS_CACHE_TIME = now
-    rss_feeds = [
-        ("CoinTelegraph", "https://cointelegraph.com/rss"),
-        ("Decrypt", "https://decrypt.co/feed"),
-    ]
+    with _NEWS_LOCK:
+        if not force_refresh and (now - _NEWS_CACHE_TIME) < 120.0 and _NEWS_CACHE:
+            return _NEWS_CACHE[:limit]
 
-    articles: list[NewsArticle] = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        _NEWS_CACHE_TIME = now
+        rss_feeds = [
+            ("CoinTelegraph", "https://cointelegraph.com/rss"),
+            ("Decrypt", "https://decrypt.co/feed"),
+        ]
 
-    for source_name, feed_url in rss_feeds:
-        try:
-            res = requests.get(feed_url, headers=headers, timeout=3)
-            if not res.ok:
-                continue
+        articles: list[NewsArticle] = []
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
-            root = ET.fromstring(res.content)
-            items = root.findall(".//item")
-
-            for item in items[:limit]:
-                title_elem = item.find("title")
-                title = title_elem.text.strip() if title_elem is not None and title_elem.text else ""
-
-                link_elem = item.find("link")
-                url = link_elem.text.strip() if link_elem is not None and link_elem.text else ""
-
-                desc_elem = item.find("description")
-                body = desc_elem.text.strip() if desc_elem is not None and desc_elem.text else ""
-                body = re.sub(r"<[^>]+>", " ", body)
-
-                pub_elem = item.find("pubDate")
-                pub_date = pub_elem.text.strip() if pub_elem is not None and pub_elem.text else "Recent"
-                try:
-                    time_part = pub_date.split()[4][:5] + " UTC"
-                except Exception:
-                    time_part = "Recent"
-
-                if not title:
+        for source_name, feed_url in rss_feeds:
+            try:
+                res = requests.get(feed_url, headers=headers, timeout=1.5)
+                if not res.ok:
                     continue
 
-                score, label, impact, affected = analyze_headline_sentiment(title, body)
+                root = ET.fromstring(res.content)
+                items = root.findall(".//item")
 
-                articles.append(
-                    NewsArticle(
-                        id=url or title[:30],
-                        title=title,
-                        url=url,
-                        source=source_name,
-                        body=body[:250],
-                        published_at=time_part,
-                        sentiment_score=score,
-                        sentiment_label=label,
-                        impact_level=impact,
-                        affected_symbols=affected,
+                for item in items[:limit]:
+                    title_elem = item.find("title")
+                    title = title_elem.text.strip() if title_elem is not None and title_elem.text else ""
+
+                    link_elem = item.find("link")
+                    url = link_elem.text.strip() if link_elem is not None and link_elem.text else ""
+
+                    desc_elem = item.find("description")
+                    body = desc_elem.text.strip() if desc_elem is not None and desc_elem.text else ""
+                    body = re.sub(r"<[^>]+>", " ", body)
+
+                    pub_elem = item.find("pubDate")
+                    pub_date = pub_elem.text.strip() if pub_elem is not None and pub_elem.text else "Recent"
+                    try:
+                        time_part = pub_date.split()[4][:5] + " UTC"
+                    except Exception:
+                        time_part = "Recent"
+
+                    if not title:
+                        continue
+
+                    score, label, impact, affected = analyze_headline_sentiment(title, body)
+
+                    articles.append(
+                        NewsArticle(
+                            id=url or title[:30],
+                            title=title,
+                            url=url,
+                            source=source_name,
+                            body=body[:250],
+                            published_at=time_part,
+                            sentiment_score=score,
+                            sentiment_label=label,
+                            impact_level=impact,
+                            affected_symbols=affected,
+                        )
                     )
-                )
-        except Exception as exc:
-            continue
+            except Exception:
+                continue
 
     impact_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
     articles.sort(key=lambda a: impact_order.get(a.impact_level, 4))

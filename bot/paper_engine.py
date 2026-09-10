@@ -421,6 +421,9 @@ def close_paper_trade(
     return True, msg, asdict(trade_hist)
 
 
+import concurrent.futures
+
+
 def check_open_trades() -> list[str]:
     """
     Checks real-time market prices against all active open trades.
@@ -438,51 +441,61 @@ def check_open_trades() -> list[str]:
     alerts: list[str] = []
     positions_to_check = list(store.positions.values())
 
+    # Fetch live candles concurrently in parallel
+    sym_dfs = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(positions_to_check))) as executor:
+        future_to_pos = {
+            executor.submit(fetch_live_candles, pos.symbol): pos
+            for pos in positions_to_check
+        }
+        for future in concurrent.futures.as_completed(future_to_pos):
+            pos = future_to_pos[future]
+            try:
+                sym_dfs[pos.id] = future.result()
+            except Exception as exc:
+                print(f"[PaperCheck] Error checking {pos.symbol}: {exc}")
+
     for pos in positions_to_check:
-        try:
-            df = fetch_live_candles(pos.symbol)
-            if df.empty:
+        df = sym_dfs.get(pos.id)
+        if df is None or df.empty:
+            continue
+
+        last_row = df.iloc[-1]
+        curr_close = float(last_row["close"])
+        high_price = float(last_row.get("high", curr_close))
+        low_price = float(last_row.get("low", curr_close))
+
+        # Long evaluation
+        if pos.action == "BUY":
+            # Check TP1 first
+            if high_price >= pos.tp1 or curr_close >= pos.tp1:
+                ok, alert_msg, _ = close_paper_trade(pos.id, pos.tp1, reason="TP1_HIT")
+                if ok:
+                    alerts.append(alert_msg)
                 continue
 
-            last_row = df.iloc[-1]
-            curr_close = float(last_row["close"])
-            high_price = float(last_row.get("high", curr_close))
-            low_price = float(last_row.get("low", curr_close))
+            # Check SL
+            if low_price <= pos.sl or curr_close <= pos.sl:
+                ok, alert_msg, _ = close_paper_trade(pos.id, pos.sl, reason="SL_HIT")
+                if ok:
+                    alerts.append(alert_msg)
+                continue
 
-            # Long evaluation
-            if pos.action == "BUY":
-                # Check TP1 first
-                if high_price >= pos.tp1 or curr_close >= pos.tp1:
-                    ok, alert_msg, _ = close_paper_trade(pos.id, pos.tp1, reason="TP1_HIT")
-                    if ok:
-                        alerts.append(alert_msg)
-                    continue
+        # Short evaluation
+        elif pos.action == "SELL":
+            # Check TP1 first (for shorts, TP1 is lower)
+            if low_price <= pos.tp1 or curr_close <= pos.tp1:
+                ok, alert_msg, _ = close_paper_trade(pos.id, pos.tp1, reason="TP1_HIT")
+                if ok:
+                    alerts.append(alert_msg)
+                continue
 
-                # Check SL
-                if low_price <= pos.sl or curr_close <= pos.sl:
-                    ok, alert_msg, _ = close_paper_trade(pos.id, pos.sl, reason="SL_HIT")
-                    if ok:
-                        alerts.append(alert_msg)
-                    continue
-
-            # Short evaluation
-            elif pos.action == "SELL":
-                # Check TP1 first (for shorts, TP1 is lower)
-                if low_price <= pos.tp1 or curr_close <= pos.tp1:
-                    ok, alert_msg, _ = close_paper_trade(pos.id, pos.tp1, reason="TP1_HIT")
-                    if ok:
-                        alerts.append(alert_msg)
-                    continue
-
-                # Check SL (for shorts, SL is higher)
-                if high_price >= pos.sl or curr_close >= pos.sl:
-                    ok, alert_msg, _ = close_paper_trade(pos.id, pos.sl, reason="SL_HIT")
-                    if ok:
-                        alerts.append(alert_msg)
-                    continue
-
-        except Exception as exc:
-            print(f"[PaperCheck] Error checking {pos.symbol}: {exc}")
+            # Check SL (for shorts, SL is higher)
+            if high_price >= pos.sl or curr_close >= pos.sl:
+                ok, alert_msg, _ = close_paper_trade(pos.id, pos.sl, reason="SL_HIT")
+                if ok:
+                    alerts.append(alert_msg)
+                continue
 
     return alerts
 
