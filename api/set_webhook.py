@@ -1,13 +1,21 @@
-﻿import json
+import json
 import os
+import sys
 from http.server import BaseHTTPRequestHandler
+from pathlib import Path
 import requests
 from dotenv import load_dotenv
+
+ROOT_DIR = str(Path(__file__).resolve().parent.parent)
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+from bot.telegram import register_telegram_commands
 
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        """1-Click Telegram Webhook Registration."""
+        """1-Click Telegram Webhook & Menu Registration."""
         load_dotenv()
         token = os.getenv("TELEGRAM_BOT_TOKEN")
         if not token:
@@ -27,14 +35,17 @@ class handler(BaseHTTPRequestHandler):
                 json={"url": webhook_url},
                 timeout=15,
             ).json()
+            cmds_res = register_telegram_commands()
         except Exception as exc:
             tg_res = {"error": str(exc)}
+            cmds_res = {"error": str(exc)}
 
         self.send_response(200)
         self.send_header("Content-type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps({
-            "message": "Webhook setup attempted",
+            "message": "Webhook & Menu Commands setup attempted",
             "registered_url": webhook_url,
-            "telegram_response": tg_res,
+            "telegram_webhook_response": tg_res,
+            "telegram_commands_response": cmds_res,
         }, indent=2).encode("utf-8"))

@@ -12,11 +12,11 @@
     },
     {
       "source": "/api/set_webhook",
-      "destination": "/api/webhook.py"
+      "destination": "/api/set_webhook.py"
     },
     {
       "source": "/api/cron",
-      "destination": "/api/webhook.py"
+      "destination": "/api/cron.py"
     },
     {
       "source": "/(.*)",
