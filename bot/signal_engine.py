@@ -34,15 +34,19 @@ class SignalReport:
     tp2: float | None = None
     tp3: float | None = None
     catalyst: str | None = None
+    smart_money: str | None = None
 
     def to_message(self) -> str:
         safe_reason = html.escape(self.reason)
         safe_trend = html.escape(self.trend)
+        smart_money_block = f"\n🏛️ <b>Binance Smart Money:</b>\n{self.smart_money}\n" if self.smart_money else ""
+
         if self.action == "WAIT":
             return (
                 f"<b>{self.symbol}</b>: <code>WAIT</code>\n"
                 f"Trend: {safe_trend}\n"
                 f"Confidence: <code>{self.confidence}%</code>\n"
+                f"{smart_money_block}"
                 f"Reason: {safe_reason}"
             )
 
@@ -71,6 +75,7 @@ class SignalReport:
             f"TP 2 (1:2.5): {_fmt_price(tp2_val)} <i>(Close 30%)</i>\n"
             f"TP 3 (1:4.0): {_fmt_price(tp3_val)} <i>(Runner 20%)</i>\n"
             f"{catalyst_line}"
+            f"{smart_money_block}"
             f"Reason: {safe_reason}"
         )
 
@@ -616,15 +621,51 @@ def _analyze_crypto_setup(
     min_confidence: int = 65,
 ) -> SignalReport:
     """
-    Dedicated Crypto & Memecoin Trading Pipeline.
+    Dedicated Crypto & Memecoin Trading Pipeline enhanced with
+    Binance Smart Money Confluence (Taker Volume Delta, Open Interest, Funding Rate, Top Trader Whales).
     """
+    # 1. Query Binance Smart Money Metrics
+    sm_metrics = None
+    try:
+        from bot.binance_engine import analyze_binance_smart_money
+        sm_metrics = analyze_binance_smart_money(symbol, data)
+    except Exception as sm_err:
+        print(f"[SignalEngine] Binance smart money error for {symbol}: {sm_err}")
+
     strategies = [
         _smc_sweep(data, bias, symbol),
         _mean_reversion(data, symbol),
         _crypto_momentum_surge(data, symbol),
         _news_catalyst_momentum(data, symbol),
     ]
-    return _quality_gate(strategies, bias, data, symbol, min_confidence)
+
+    report = _quality_gate(strategies, bias, data, symbol, min_confidence)
+
+    # 2. Layer Smart Money Confluence onto report
+    if sm_metrics and sm_metrics.summary_text:
+        conf = report.confidence
+        if report.action == "BUY" and sm_metrics.bias == "BULLISH":
+            conf = min(98, conf + sm_metrics.confidence_modifier)
+        elif report.action == "SELL" and sm_metrics.bias == "BEARISH":
+            conf = min(98, conf + sm_metrics.confidence_modifier)
+
+        return SignalReport(
+            symbol=report.symbol,
+            action=report.action,
+            confidence=conf,
+            trend=report.trend,
+            entry=report.entry,
+            stop_loss=report.stop_loss,
+            take_profit=report.take_profit,
+            reason=report.reason,
+            tp1=report.tp1,
+            tp2=report.tp2,
+            tp3=report.tp3,
+            catalyst=report.catalyst,
+            smart_money=sm_metrics.summary_text,
+        )
+
+    return report
 
 
 # ===========================================================================

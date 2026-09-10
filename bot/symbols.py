@@ -9,6 +9,38 @@ SYMBOL_ALIASES = {
     "BOME_USD": "BOME/USDT",
 }
 
+# Binance Spot & Futures symbol mapping for high-speed quantitative data
+BINANCE_SYMBOLS = {
+    # Major Cryptos (/c1)
+    "BTC_USD": {"spot": "BTCUSDT", "futures": "BTCUSDT"},
+    "ETH_USD": {"spot": "ETHUSDT", "futures": "ETHUSDT"},
+    "SOL_USD": {"spot": "SOLUSDT", "futures": "SOLUSDT"},
+    "XRP_USD": {"spot": "XRPUSDT", "futures": "XRPUSDT"},
+    "DOGE_USD": {"spot": "DOGEUSDT", "futures": "DOGEUSDT"},
+    "ADA_USD": {"spot": "ADAUSDT", "futures": "ADAUSDT"},
+    # High-Momentum Altcoins (/c2)
+    "BNB_USD": {"spot": "BNBUSDT", "futures": "BNBUSDT"},
+    "AVAX_USD": {"spot": "AVAXUSDT", "futures": "AVAXUSDT"},
+    "LINK_USD": {"spot": "LINKUSDT", "futures": "LINKUSDT"},
+    "SUI_USD": {"spot": "SUIUSDT", "futures": "SUIUSDT"},
+    "NEAR_USD": {"spot": "NEARUSDT", "futures": "NEARUSDT"},
+    "LTC_USD": {"spot": "LTCUSDT", "futures": "LTCUSDT"},
+    # Top Memecoins (/m1)
+    "WIF_USD": {"spot": "WIFUSDT", "futures": "WIFUSDT"},
+    "PEPE_USD": {"spot": "PEPEUSDT", "futures": "1000PEPEUSDT"},
+    "SHIB_USD": {"spot": "SHIBUSDT", "futures": "1000SHIBUSDT"},
+    "BONK_USD": {"spot": "BONKUSDT", "futures": "1000BONKUSDT"},
+    "FLOKI_USD": {"spot": "FLOKIUSDT", "futures": "1000FLOKIUSDT"},
+    "BRETT_USD": {"spot": "BRETTUSDT", "futures": "BRETTUSDT"},
+    # Trending & Narrative Memecoins (/m2)
+    "TRUMP_USD": {"spot": "TRUMPUSDT", "futures": "TRUMPUSDT"},
+    "BOME_USD": {"spot": "BOMEUSDT", "futures": "BOMEUSDT"},
+    "PENGU_USD": {"spot": "PENGUUSDT", "futures": "PENGUUSDT"},
+    "MOG_USD": {"spot": "MOGUSDT", "futures": "1000MOGUSDT"},
+    "PEOPLE_USD": {"spot": "PEOPLEUSDT", "futures": "PEOPLEUSDT"},
+    "ELON_USD": {"spot": "ELONUSDT", "futures": "1000ELONUSDT"},
+}
+
 DEX_POOLS = {
     "ANSEM_USD": ("solana", "FnzKY6x7entQ1eR3D225dQyT7ybfka4PskBMQhb8L3CC"),
 }

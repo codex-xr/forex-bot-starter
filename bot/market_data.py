@@ -7,7 +7,22 @@ import requests
 from dotenv import load_dotenv
 
 from bot.data import load_price_data
-from bot.symbols import DEX_POOLS, SYMBOL_ALIASES
+from bot.symbols import DEX_POOLS, SYMBOL_ALIASES, BINANCE_SYMBOLS
+
+
+def _map_interval_to_binance(interval: str) -> str:
+    s = interval.lower().strip()
+    if "15" in s:
+        return "15m"
+    if "5" in s:
+        return "5m"
+    if "1" in s and ("h" in s or "hour" in s):
+        return "1h"
+    if "4" in s and ("h" in s or "hour" in s):
+        return "4h"
+    if "d" in s or "day" in s:
+        return "1d"
+    return "15m"
 
 
 def fetch_dex_candles(network: str, pool_address: str, aggregate: int = 15, limit: int = 100) -> pd.DataFrame:
@@ -41,10 +56,23 @@ def fetch_dex_candles(network: str, pool_address: str, aggregate: int = 15, limi
 
 
 def fetch_live_candles(symbol: str, interval: str = "15min", outputsize: int = 100) -> pd.DataFrame:
+    # 1. Specialized Solana DEX Pools (e.g. $ANSEM)
     if symbol in DEX_POOLS:
         network, pool = DEX_POOLS[symbol]
         return fetch_dex_candles(network, pool, aggregate=15, limit=outputsize)
 
+    # 2. Binance Quantitative High-Speed Engine for all Crypto & Memecoins
+    if symbol in BINANCE_SYMBOLS:
+        try:
+            from bot.binance_engine import fetch_binance_klines
+            b_interval = _map_interval_to_binance(interval)
+            b_df = fetch_binance_klines(symbol, interval=b_interval, limit=outputsize)
+            if b_df is not None and len(b_df) >= 10:
+                return b_df
+        except Exception as b_err:
+            print(f"[MarketData] Binance fetch fallback for {symbol}: {b_err}")
+
+    # 3. Twelve Data / Fallback for Forex & Commodities
     load_dotenv()
 
     api_key = os.getenv("TWELVE_DATA_API_KEY")
