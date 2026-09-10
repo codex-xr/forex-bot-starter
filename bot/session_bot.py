@@ -83,11 +83,11 @@ ALL_WATCHLIST = list(dict.fromkeys(
 ))
 
 
-def scan_symbol(symbol: str, min_confidence: int, session_key: str | None = None) -> str:
+def scan_symbol_report(symbol: str, min_confidence: int, session_key: str | None = None) -> tuple[str, object | None]:
     try:
         prices = fetch_live_candles(symbol)
     except Exception as exc:
-        return f"{symbol}: Data unavailable ({exc})"
+        return f"{symbol}: Data unavailable ({exc})", None
 
     report = analyze_setup(
         symbol,
@@ -95,10 +95,10 @@ def scan_symbol(symbol: str, min_confidence: int, session_key: str | None = None
         min_confidence=min_confidence,
         session_key=session_key,
     )
-    return report.to_message()
+    return report.to_message(), report
 
 
-def build_session_message(session_key: str, min_confidence: int) -> str:
+def build_session_scan(session_key: str, min_confidence: int) -> tuple[str, list]:
     session = SESSIONS[session_key]
     watchlist = SESSION_WATCHLISTS.get(session_key, ALL_WATCHLIST)
 
@@ -110,13 +110,22 @@ def build_session_message(session_key: str, min_confidence: int) -> str:
         "",
     ]
 
+    setups = []
     for i, symbol in enumerate(watchlist):
         if i > 0:
             time.sleep(0.5)
-        lines.append(scan_symbol(symbol, min_confidence, session_key=session_key))
+        msg, report = scan_symbol_report(symbol, min_confidence, session_key=session_key)
+        lines.append(msg)
         lines.append("")
+        if report and getattr(report, "action", "") in ("BUY", "SELL"):
+            setups.append(report)
 
-    return "\n".join(lines).strip()
+    return "\n".join(lines).strip(), setups
+
+
+def build_session_message(session_key: str, min_confidence: int) -> str:
+    msg, _ = build_session_scan(session_key, min_confidence)
+    return msg
 
 
 def run_session(session_key: str, min_confidence: int) -> None:

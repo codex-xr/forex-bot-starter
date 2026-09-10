@@ -57,12 +57,17 @@ def register_telegram_commands() -> dict:
     """
     user_commands = [
         {"command": "menu", "description": "📱 Interactive Signal Dashboard"},
+        {"command": "status", "description": "📊 Live Open Trades & Floating PnL"},
+        {"command": "summary", "description": "📅 End-of-Day PnL & Performance Report"},
         {"command": "f1", "description": "📈 Forex Majors (EUR, GBP, JPY, CAD...)"},
         {"command": "f2", "description": "🏆 Crosses, Gold (XAU) & US30"},
         {"command": "c1", "description": "🚀 Major Cryptos (BTC, ETH, SOL, XRP...)"},
         {"command": "c2", "description": "⚡ High-Momentum Altcoins (BNB, SUI...)"},
         {"command": "m1", "description": "🐶 Top Memes (WIF, PEPE, BONK, SHIB)"},
         {"command": "m2", "description": "🐸 Trending Memes (TRUMP, PENGU...)"},
+        {"command": "enter", "description": "🚀 Enter Paper Trade (/enter BTC)"},
+        {"command": "close", "description": "❌ Close Paper Trade (/close BTC)"},
+        {"command": "history", "description": "📜 Recent Paper Trade History"},
         {"command": "news", "description": "📰 Breaking Catalysts & News Monitor"},
         {"command": "autopilot", "description": "🤖 Auto-Pilot 24/7 Status"},
         {"command": "myplan", "description": "ℹ️ View VIP Subscription Status"},
@@ -73,6 +78,8 @@ def register_telegram_commands() -> dict:
     admin_commands = [
         {"command": "admin", "description": "👑 Master Admin Control Panel"},
         {"command": "menu", "description": "📱 Interactive Signal Dashboard"},
+        {"command": "status", "description": "📊 Live Open Trades & Floating PnL"},
+        {"command": "summary", "description": "📅 End-of-Day PnL & Performance Report"},
         {"command": "users", "description": "👥 User Dashboard & Access Tracker"},
         {"command": "genkey", "description": "🔑 Generate VIP Key (/genkey 30d)"},
         {"command": "grant", "description": "🎁 Direct VIP Grant (/grant id 30d)"},
@@ -82,12 +89,15 @@ def register_telegram_commands() -> dict:
         {"command": "broadcast", "description": "📢 Instant Announcement to All"},
         {"command": "schedule", "description": "⏰ Schedule Broadcast Alert"},
         {"command": "schedules", "description": "📋 View Active Schedules"},
+        {"command": "enter", "description": "🚀 Enter Paper Trade (/enter BTC)"},
+        {"command": "close", "description": "❌ Close Paper Trade (/close BTC)"},
+        {"command": "setbalance", "description": "💼 Set Virtual Balance (/setbalance 10000)"},
+        {"command": "setsize", "description": "⚙️ Set Trade Size (/setsize 500)"},
         {"command": "f1", "description": "📈 Forex Majors Scan"},
         {"command": "c1", "description": "🚀 Major Cryptos Scan"},
         {"command": "m1", "description": "🐶 Top Memes Scan"},
         {"command": "news", "description": "📰 Breaking Catalysts & News"},
         {"command": "autopilot", "description": "🤖 Auto-Pilot 24/7 Status"},
-        {"command": "status", "description": "📊 Bot Health Status"},
         {"command": "help", "description": "❓ Show Full Help & Command Guide"},
     ]
 

@@ -23,8 +23,23 @@ from bot.access_control import (
     process_due_broadcasts,
 )
 from bot.autopilot import autopilot
+from bot.market_data import fetch_live_candles
 from bot.news_engine import format_news_summary
-from bot.session_bot import build_session_message
+from bot.paper_engine import (
+    open_paper_trade,
+    close_paper_trade,
+    check_open_trades,
+    get_status_report,
+    get_daily_summary_report,
+    get_trade_history_report,
+    set_virtual_balance,
+    set_trade_size,
+    close_all_open_trades,
+    get_paper_settings,
+)
+from bot.session_bot import build_session_scan, build_session_message, ALL_WATCHLIST
+from bot.signal_engine import analyze_setup
+from bot.symbols import DISPLAY_NAMES
 from bot.telegram import send_telegram_message, telegram_request
 
 
@@ -61,12 +76,16 @@ def get_menu_keyboard(is_admin_user: bool = False) -> dict:
             {"text": "🐸 Trending Memes (/m2)", "callback_data": "/m2"},
         ],
         [
+            {"text": "📊 Live Trades (/status)", "callback_data": "/status"},
+            {"text": "📅 Daily PnL (/summary)", "callback_data": "/summary"},
+        ],
+        [
             {"text": "📰 Breaking News", "callback_data": "/news"},
             {"text": "🤖 Auto-Pilot", "callback_data": "/autopilot"},
         ],
         [
             {"text": "ℹ️ My Subscription", "callback_data": "/myplan"},
-            {"text": "📊 Bot Health", "callback_data": "/status"},
+            {"text": "📜 Trade History", "callback_data": "/history"},
         ],
     ]
     if is_admin_user:
@@ -93,8 +112,12 @@ def get_admin_keyboard() -> dict:
                 {"text": "🔑 VIP Keys (/keys)", "callback_data": "/keys"},
             ],
             [
+                {"text": "📊 Live Trades (/status)", "callback_data": "/status"},
+                {"text": "📅 Daily PnL (/summary)", "callback_data": "/summary"},
+            ],
+            [
                 {"text": "⏰ Active Schedules (/schedules)", "callback_data": "/schedules"},
-                {"text": "📊 Bot Health (/status)", "callback_data": "/status"},
+                {"text": "🤖 Auto-Pilot (/autopilot)", "callback_data": "/autopilot"},
             ],
             [
                 {"text": "📈 Forex Scan (/f1)", "callback_data": "/f1"},
@@ -128,6 +151,15 @@ Tap any button below or type a command to scan the market:
 • <code>/m1</code> — Top Memes (WIF, PEPE, SHIB, BONK, FLOKI, BRETT, ANSEM)
 • <code>/m2</code> — Trending Memes (TRUMP, BOME, PENGU, MOG, PEOPLE, ELON)
 
+💼 <b>Paper Trading & Forward-Testing:</b>
+• <code>/status</code> — Active open trades, live prices & floating PnL
+• <code>/summary</code> — End-of-day performance, daily PnL, best/worst pairs
+• <code>/setbalance &lt;amt&gt;</code> — Set virtual account capital (e.g. <code>/setbalance 10000</code>)
+• <code>/setsize &lt;amt&gt;</code> — Set entry size per trade (e.g. <code>/setsize 500</code>)
+• <code>/enter &lt;symbol&gt;</code> — Enter a paper trade manually (e.g. <code>/enter BTC</code>)
+• <code>/close &lt;symbol&gt;</code> — Close an active paper trade (or <code>/closeall</code>)
+• <code>/history</code> — View recent closed trade history
+
 📰 <b>Breaking News & Catalysts:</b>
 • <code>/news</code> — Real-time Crypto, Trump & Macro Sentiment Monitor
 
@@ -139,7 +171,6 @@ Tap any button below or type a command to scan the market:
 ℹ️ <b>Account & Setup:</b>
 • <code>/menu</code> — Show Interactive Button Menu
 • <code>/myplan</code> — View your VIP subscription status
-• <code>/status</code> — Bot Health & Active Status
 • <code>/help</code> — Show this full guide
 """
 
@@ -192,6 +223,46 @@ def handle_callback_query(callback_query: dict) -> None:
     if not chat_id or not data:
         return
 
+    # 1. Handle 1-Click Paper Trade Entry
+    if data.startswith("paper_enter:"):
+        parts = data.split(":")
+        if len(parts) >= 3:
+            symbol = parts[1]
+            action = parts[2]
+            try:
+                candles = fetch_live_candles(symbol)
+                report = analyze_setup(symbol, candles, min_confidence=50)
+                curr_close = float(candles.iloc[-1]["close"])
+                entry = report.entry or curr_close
+                sl = report.stop_loss or (entry * 0.98 if action == "BUY" else entry * 1.02)
+                tp1 = report.tp1 or report.take_profit or (entry * 1.03 if action == "BUY" else entry * 0.97)
+                ok, enter_msg, _ = open_paper_trade(symbol, action, entry, sl, tp1)
+                send_telegram_message(enter_msg, chat_id=chat_id)
+            except Exception as e:
+                send_telegram_message(f"❌ Failed to enter paper trade for {symbol}: {e}", chat_id=chat_id)
+        return
+
+    # 2. Handle Manual Paper Trade Close from Status Dashboard
+    if data.startswith("paper_close:"):
+        pos_id = data.split(":", 1)[1]
+        try:
+            from bot.paper_engine import _load_paper_store
+            store = _load_paper_store()
+            pos = store.positions.get(pos_id)
+            curr_price = pos.entry_price if pos else 0.0
+            if pos:
+                try:
+                    df = fetch_live_candles(pos.symbol)
+                    if not df.empty:
+                        curr_price = float(df.iloc[-1]["close"])
+                except Exception:
+                    pass
+            ok, close_msg, _ = close_paper_trade(pos_id, curr_price if curr_price > 0 else 1.0, reason="MANUAL_CLOSE")
+            send_telegram_message(close_msg, chat_id=chat_id)
+        except Exception as e:
+            send_telegram_message(f"❌ Failed to close position: {e}", chat_id=chat_id)
+        return
+
     # Route button action as standard command message
     synthetic_msg = {
         "chat": {"id": chat_id},
@@ -207,6 +278,16 @@ def handle_message(message: dict) -> None:
         process_due_broadcasts()
     except Exception as sched_err:
         print(f"[ScheduledBroadcast] Process error: {sched_err}")
+
+    # Check open paper trades against real-time market prices
+    chat_id = message.get("chat", {}).get("id")
+    try:
+        trade_alerts = check_open_trades()
+        for alert_msg in trade_alerts:
+            if chat_id:
+                send_telegram_message(alert_msg, chat_id=chat_id)
+    except Exception as trade_err:
+        print(f"[PaperCheck] Error: {trade_err}")
 
     chat_id = message.get("chat", {}).get("id")
     user_info = message.get("from", {})
@@ -455,21 +536,135 @@ def handle_message(message: dict) -> None:
                 send_telegram_message(autopilot.get_status_text(), chat_id=chat_id)
                 return
 
-        if command == "/status":
-            auto_state = "🟢 ACTIVE" if autopilot.is_active else "🔴 PAUSED"
-            send_telegram_message(
-                f"✅ <b>Bot Online & Active</b>\n\n"
-                f"• <b>Commands:</b> <code>/f1</code>, <code>/f2</code>, <code>/c1</code>, <code>/c2</code>, <code>/m1</code>, <code>/m2</code>\n"
-                f"• <b>Auto-Pilot:</b> {auto_state} (65% Gate)\n"
-                f"• <b>DEX Streamer:</b> Solana ($ANSEM) connected",
-                chat_id=chat_id,
-            )
+        # -------------------------------------------------------------
+        # Paper Trading & Forward-Testing Execution
+        # -------------------------------------------------------------
+        if command in {"/status", "/trades", "/paper"}:
+            status_text, status_keyboard = get_status_report()
+            send_telegram_message(status_text, chat_id=chat_id, reply_markup=status_keyboard)
+            return
+
+        if command in {"/summary", "/daily", "/pnl"}:
+            target_date = subcmd if subcmd else None
+            summary_text = get_daily_summary_report(target_date)
+            send_telegram_message(summary_text, chat_id=chat_id)
+            return
+
+        if command in {"/history", "/trades_history"}:
+            send_telegram_message(get_trade_history_report(), chat_id=chat_id)
+            return
+
+        if command in {"/setbalance", "/paper_balance"}:
+            if not subcmd:
+                settings = get_paper_settings()
+                send_telegram_message(
+                    f"💼 <b>Current Virtual Balance:</b> <code>${settings['virtual_balance']:,.2f}</code>\n\n"
+                    f"To update, send: <code>/setbalance &lt;amount&gt;</code>\n"
+                    f"Example: <code>/setbalance 10000</code>",
+                    chat_id=chat_id,
+                )
+                return
+            clean_val = subcmd.replace("$", "").replace(",", "").strip()
+            try:
+                val = float(clean_val)
+                ok, msg = set_virtual_balance(val)
+                send_telegram_message(msg, chat_id=chat_id)
+            except ValueError:
+                send_telegram_message("❌ Invalid balance amount. Example: <code>/setbalance 10000</code>", chat_id=chat_id)
+            return
+
+        if command in {"/setsize", "/paper_size", "/lotsize", "/setlot"}:
+            if not subcmd:
+                settings = get_paper_settings()
+                send_telegram_message(
+                    f"⚙️ <b>Current Trade Size:</b> <code>${settings['trade_size_usd']:,.2f}</code> per entry\n\n"
+                    f"To update, send: <code>/setsize &lt;amount&gt;</code>\n"
+                    f"Example: <code>/setsize 500</code>",
+                    chat_id=chat_id,
+                )
+                return
+            clean_val = subcmd.replace("$", "").replace(",", "").strip()
+            try:
+                val = float(clean_val)
+                ok, msg = set_trade_size(val)
+                send_telegram_message(msg, chat_id=chat_id)
+            except ValueError:
+                send_telegram_message("❌ Invalid size amount. Example: <code>/setsize 500</code>", chat_id=chat_id)
+            return
+
+        if command in {"/enter", "/paper_enter", "/trade"}:
+            if not subcmd:
+                send_telegram_message(
+                    "⚠️ Please specify a symbol to enter.\n\n"
+                    "Usage: <code>/enter &lt;symbol&gt;</code>\n"
+                    "Example: <code>/enter BTC</code> or <code>/enter SOL</code>",
+                    chat_id=chat_id,
+                )
+                return
+            sym_raw = subcmd.upper().replace("/", "_")
+            target_sym = None
+            for s in ALL_WATCHLIST:
+                if s.upper() == sym_raw or s.split("_")[0].upper() == sym_raw or s.replace("_", "").upper() == sym_raw:
+                    target_sym = s
+                    break
+            if not target_sym:
+                target_sym = f"{sym_raw}_USD" if not sym_raw.endswith("_USD") else sym_raw
+
+            try:
+                candles = fetch_live_candles(target_sym)
+                report = analyze_setup(target_sym, candles, min_confidence=50)
+                action = "BUY" if report.action in ("BUY", "LONG") else ("SELL" if report.action in ("SELL", "SHORT") else "BUY")
+                curr_price = float(candles.iloc[-1]["close"])
+                entry = report.entry or curr_price
+                sl = report.stop_loss or (entry * 0.98 if action == "BUY" else entry * 1.02)
+                tp1 = report.tp1 or report.take_profit or (entry * 1.03 if action == "BUY" else entry * 0.97)
+                ok, enter_msg, _ = open_paper_trade(target_sym, action, entry, sl, tp1)
+                send_telegram_message(enter_msg, chat_id=chat_id)
+            except Exception as e:
+                send_telegram_message(f"❌ Failed to enter paper trade for {target_sym}: {e}", chat_id=chat_id)
+            return
+
+        if command in {"/close", "/closeall"}:
+            if command == "/closeall" or subcmd.lower() in ("all", "closeall"):
+                cnt, close_msg = close_all_open_trades()
+                send_telegram_message(close_msg, chat_id=chat_id)
+                return
+            if not subcmd:
+                send_telegram_message(
+                    "⚠️ Specify a symbol to close, or use <code>/closeall</code>.\n"
+                    "Example: <code>/close BTC</code>",
+                    chat_id=chat_id,
+                )
+                return
+            sym_input = subcmd.upper().replace("/", "_")
+            target_sym = None
+            for s in ALL_WATCHLIST:
+                if s.upper() == sym_input or s.split("_")[0].upper() == sym_input:
+                    target_sym = s
+                    break
+            target_sym = target_sym or sym_input
+            curr_price = 0.0
+            try:
+                candles = fetch_live_candles(target_sym)
+                curr_price = float(candles.iloc[-1]["close"])
+            except Exception:
+                pass
+            ok, msg, _ = close_paper_trade(target_sym, curr_price if curr_price > 0 else 1.0, reason="MANUAL_CLOSE")
+            send_telegram_message(msg, chat_id=chat_id)
             return
 
         if command in COMMANDS:
             send_telegram_message("Scanning market. One moment...", chat_id=chat_id)
-            message_text = build_session_message(COMMANDS[command], min_confidence=65)
-            send_telegram_message(message_text, chat_id=chat_id)
+            message_text, setups = build_session_scan(COMMANDS[command], min_confidence=65)
+            reply_markup = None
+            if setups:
+                buttons = []
+                for stp in setups:
+                    disp = DISPLAY_NAMES.get(stp.symbol, stp.symbol.replace("_", "/"))
+                    btn_text = f"🚀 Enter {disp} ({stp.action})"
+                    buttons.append([{"text": btn_text, "callback_data": f"paper_enter:{stp.symbol}:{stp.action}"}])
+                reply_markup = {"inline_keyboard": buttons}
+            send_telegram_message(message_text, chat_id=chat_id, reply_markup=reply_markup)
             return
 
         send_telegram_message("Unknown command. Send /help to see available commands.", chat_id=chat_id)
