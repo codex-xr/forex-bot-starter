@@ -94,7 +94,18 @@ class handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 print(f"[Cron Broadcast] Error: {exc}")
 
-            # 2. Run autopilot symbol scans
+            # 2. Check open paper trades (trigger TP1/SL closures)
+            paper_trade_alerts = []
+            try:
+                from bot.paper_engine import check_open_trades
+                from bot.telegram import send_telegram_message
+                paper_trade_alerts = check_open_trades()
+                for alert_msg in paper_trade_alerts:
+                    send_telegram_message(alert_msg)
+            except Exception as exc:
+                print(f"[Cron PaperTrade] Error: {exc}")
+
+            # 3. Run autopilot symbol scans
             alerts = []
             for symbol in ALL_WATCHLIST:
                 try:
@@ -110,6 +121,7 @@ class handler(BaseHTTPRequestHandler):
                 "status": "success",
                 "symbols_scanned": len(ALL_WATCHLIST),
                 "alerts_triggered": alerts,
+                "paper_trade_alerts": len(paper_trade_alerts),
                 "broadcasts_executed": executed_broadcasts,
             }, indent=2).encode("utf-8"))
             return

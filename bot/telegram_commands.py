@@ -214,9 +214,12 @@ def handle_callback_query(callback_query: dict) -> None:
     user_info = callback_query.get("from", {})
     data = (callback_query.get("data") or "").strip()
 
+    if not chat_id and user_info:
+        chat_id = user_info.get("id")
+
     if query_id:
         try:
-            telegram_request("answerCallbackQuery", {"callback_query_id": query_id})
+            telegram_request("answerCallbackQuery", {"callback_query_id": query_id}, timeout=5)
         except Exception as exc:
             print(f"[CallbackQuery] Ack error: {exc}")
 
@@ -263,11 +266,14 @@ def handle_callback_query(callback_query: dict) -> None:
             send_telegram_message(f"❌ Failed to close position: {e}", chat_id=chat_id)
         return
 
+    # Normalize data as standard command with slash if needed
+    cmd_text = data if data.startswith("/") else f"/{data}"
+
     # Route button action as standard command message
     synthetic_msg = {
         "chat": {"id": chat_id},
         "from": user_info,
-        "text": data,
+        "text": cmd_text,
     }
     handle_message(synthetic_msg)
 
@@ -307,7 +313,7 @@ def handle_message(message: dict) -> None:
         # -------------------------------------------------------------
         # 1. Public Account & Help Commands (Always Accessible)
         # -------------------------------------------------------------
-        if command in {"/start", "/help", "/menu", "/commands", "/cmds"}:
+        if command in {"/start", "/help", "/menu", "/commands", "/cmds", "/dashboard", "/dash", "/signals"}:
             is_auth, _ = is_user_authorized(chat_id, user_info)
             admin_flag = is_admin(chat_id) or (user_info and is_admin(user_info.get("id")))
             if admin_flag:

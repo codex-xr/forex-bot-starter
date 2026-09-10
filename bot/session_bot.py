@@ -111,9 +111,7 @@ def build_session_scan(session_key: str, min_confidence: int) -> tuple[str, list
     ]
 
     setups = []
-    for i, symbol in enumerate(watchlist):
-        if i > 0:
-            time.sleep(0.5)
+    for symbol in watchlist:
         msg, report = scan_symbol_report(symbol, min_confidence, session_key=session_key)
         lines.append(msg)
         lines.append("")
