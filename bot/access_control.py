@@ -313,7 +313,6 @@ def is_user_authorized(chat_id: int | str, user_info: dict | None = None) -> tup
             user["username"] = user_info["username"]
         if user_info.get("first_name"):
             user["first_name"] = user_info["first_name"]
-        _save_store()
 
     if user.get("status") == "revoked":
         return False, "revoked"

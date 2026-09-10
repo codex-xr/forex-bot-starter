@@ -98,6 +98,9 @@ def scan_symbol_report(symbol: str, min_confidence: int, session_key: str | None
     return report.to_message(), report
 
 
+import concurrent.futures
+
+
 def build_session_scan(session_key: str, min_confidence: int) -> tuple[str, list]:
     session = SESSIONS[session_key]
     watchlist = SESSION_WATCHLISTS.get(session_key, ALL_WATCHLIST)
@@ -110,9 +113,23 @@ def build_session_scan(session_key: str, min_confidence: int) -> tuple[str, list
         "",
     ]
 
+    # Fetch and analyze symbols concurrently in parallel (sub-second response)
+    sym_results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(watchlist))) as executor:
+        future_to_sym = {
+            executor.submit(scan_symbol_report, sym, min_confidence, session_key): sym
+            for sym in watchlist
+        }
+        for future in concurrent.futures.as_completed(future_to_sym):
+            sym = future_to_sym[future]
+            try:
+                sym_results[sym] = future.result()
+            except Exception as e:
+                sym_results[sym] = (f"{sym}: Data unavailable ({e})", None)
+
     setups = []
     for symbol in watchlist:
-        msg, report = scan_symbol_report(symbol, min_confidence, session_key=session_key)
+        msg, report = sym_results.get(symbol, (f"{symbol}: Data unavailable", None))
         lines.append(msg)
         lines.append("")
         if report and getattr(report, "action", "") in ("BUY", "SELL"):
