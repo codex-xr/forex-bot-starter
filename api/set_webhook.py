@@ -32,7 +32,11 @@ class handler(BaseHTTPRequestHandler):
         try:
             tg_res = requests.post(
                 f"https://api.telegram.org/bot{token}/setWebhook",
-                json={"url": webhook_url},
+                json={
+                    "url": webhook_url,
+                    "allowed_updates": ["message", "callback_query"],
+                    "drop_pending_updates": True,
+                },
                 timeout=15,
             ).json()
             cmds_res = register_telegram_commands()

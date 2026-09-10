@@ -12,12 +12,14 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 try:
-    from bot.telegram_commands import handle_message
+    from bot.telegram_commands import handle_message, handle_callback_query
     from bot.autopilot import autopilot
     from bot.session_bot import ALL_WATCHLIST
+    from bot.telegram import register_telegram_commands
 except Exception as import_err:
     print(f"[Vercel Startup Error]: {import_err}")
     handle_message = None
+    handle_callback_query = None
     autopilot = None
     ALL_WATCHLIST = []
     _IMPORT_ERROR = traceback.format_exc()
@@ -29,10 +31,21 @@ class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
         post_data = self.rfile.read(content_length)
+        resp_payload = {"ok": True}
 
         try:
             update = json.loads(post_data.decode("utf-8"))
-            if "message" in update:
+            if "callback_query" in update:
+                cb = update["callback_query"]
+                qid = cb.get("id")
+                if qid:
+                    resp_payload = {
+                        "method": "answerCallbackQuery",
+                        "callback_query_id": qid,
+                    }
+                if handle_callback_query:
+                    handle_callback_query(cb)
+            elif "message" in update and handle_message:
                 handle_message(update["message"])
         except Exception as exc:
             print(f"[Vercel Webhook] Error: {exc}")
@@ -40,7 +53,7 @@ class handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "application/json")
         self.end_headers()
-        self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
+        self.wfile.write(json.dumps(resp_payload).encode("utf-8"))
 
     def do_GET(self):
         path = self.path.split("?")[0].rstrip("/")
