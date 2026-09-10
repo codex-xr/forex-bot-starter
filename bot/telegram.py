@@ -3,7 +3,7 @@ import requests
 from dotenv import load_dotenv
 
 
-def telegram_request(method: str, payload: dict | None = None, timeout: int = 8) -> dict:
+def telegram_request(method: str, payload: dict | None = None, timeout: int | tuple = 15) -> dict:
     load_dotenv()
 
     token = os.getenv("TELEGRAM_BOT_TOKEN")
