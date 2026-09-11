@@ -94,12 +94,13 @@ class StrategySignal:
 
 def rsi(close: pd.Series, period: int = 14) -> pd.Series:
     delta = close.diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = (-delta.clip(upper=0)).rolling(period).mean()
-    rs = gain / loss
-    rs = rs.replace([np.inf, -np.inf], 99_999)
-    rsi_val = 100 - (100 / (1 + rs))
-    both_zero = (gain == 0) & (loss == 0)
+    gain = delta.clip(lower=0)
+    loss = (-delta.clip(upper=0))
+    avg_gain = gain.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, 1e-10)
+    rsi_val = 100.0 - (100.0 / (1.0 + rs))
+    both_zero = (avg_gain == 0) & (avg_loss == 0)
     rsi_val[both_zero] = 50.0
     return rsi_val
 
@@ -109,7 +110,7 @@ def atr(prices: pd.DataFrame, period: int = 14) -> pd.Series:
     hc = (prices["high"] - prices["close"].shift()).abs()
     lc = (prices["low"] - prices["close"].shift()).abs()
     tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
+    return tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
 
 
 def adx(prices: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -158,6 +159,11 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     d["std20"] = d["close"].rolling(20).std()
     d["upper_band"] = d["sma20"] + 2.5 * d["std20"]
     d["lower_band"] = d["sma20"] - 2.5 * d["std20"]
+    if "volume" in d.columns:
+        vol_ma = d["volume"].rolling(20).mean().replace(0, np.nan)
+        d["rvol"] = (d["volume"] / vol_ma).fillna(1.0)
+    else:
+        d["rvol"] = 1.0
     return d
 
 
@@ -167,21 +173,48 @@ def check_rejection(row: pd.Series, direction: str) -> bool:
     lower_wick = min(row["open"], row["close"]) - row["low"]
     total_range = row["high"] - row["low"]
 
-    if total_range == 0 or body == 0:
+    if total_range == 0:
         return False
 
     if direction == "buy":
-        return bool(lower_wick > body * 1.8
-                and lower_wick >= total_range * 0.35
-                and row["close"] > row["open"])
-    return bool(upper_wick > body * 1.8
-            and upper_wick >= total_range * 0.35
-            and row["close"] < row["open"])
+        is_standard_hammer = (
+            body > 0
+            and lower_wick > body * 1.8
+            and lower_wick >= total_range * 0.35
+            and row["close"] > row["open"]
+        )
+        is_pinbar_hammer = (
+            lower_wick >= total_range * 0.55
+            and upper_wick <= total_range * 0.20
+        )
+        return bool(is_standard_hammer or is_pinbar_hammer)
+
+    is_standard_star = (
+        body > 0
+        and upper_wick > body * 1.8
+        and upper_wick >= total_range * 0.35
+        and row["close"] < row["open"]
+    )
+    is_pinbar_star = (
+        upper_wick >= total_range * 0.55
+        and lower_wick <= total_range * 0.20
+    )
+    return bool(is_standard_star or is_pinbar_star)
 
 
 def htf_bias(data: pd.DataFrame) -> str:
+    if "ema50" not in data.columns:
+        return "neutral"
     ema50 = data["ema50"]
-    slope = ema50.iloc[-1] - ema50.iloc[-5]
+    slope = ema50.iloc[-1] - ema50.iloc[-5] if len(ema50) >= 5 else 0.0
+    if "ema200" in data.columns and len(data) >= 20:
+        close = float(data["close"].iloc[-1])
+        ema200 = float(data["ema200"].iloc[-1])
+        if close > ema200 and slope > 0:
+            return "bullish"
+        if close < ema200 and slope < 0:
+            return "bearish"
+        return "neutral"
     if slope > 0:
         return "bullish"
     if slope < 0:
@@ -247,6 +280,8 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
     prior_high = ref["high"].max()
     prior_low = ref["low"].min()
 
+    last_rvol = float(last["rvol"]) if "rvol" in last and pd.notna(last["rvol"]) else 1.2
+
     bull_trend = last["ema20"] > last["ema50"] and close > last["ema20"] * 0.998
     bear_trend = last["ema20"] < last["ema50"] and close < last["ema20"] * 1.002
 
@@ -254,10 +289,11 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
         is_breakout = close > prior_high and close > open_p and body >= 0.40 * total_range
         is_ema_bounce = prev["low"] <= last["ema20"] * 1.003 and close >= last["ema20"]
 
-        if is_breakout:
+        if is_breakout and last_rvol >= 1.1:
+            rvol_str = f", RVol {last_rvol:.1f}x" if last_rvol > 1.0 else ""
             return StrategySignal(
                 "Crypto Momentum Surge", "BUY", 92,
-                f"High-volume breakout ({close:.4f} > {prior_high:.4f}), RSI {last_rsi:.0f}, ADX {last_adx:.0f}",
+                f"High-volume breakout ({close:.4f} > {prior_high:.4f}), RSI {last_rsi:.0f}, ADX {last_adx:.0f}{rvol_str}",
             )
         if is_ema_bounce:
             return StrategySignal(
@@ -269,10 +305,11 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
         is_breakdown = close < prior_low and close < open_p and body >= 0.40 * total_range
         is_ema_reject = prev["high"] >= last["ema20"] * 0.997 and close <= last["ema20"]
 
-        if is_breakdown:
+        if is_breakdown and last_rvol >= 1.1:
+            rvol_str = f", RVol {last_rvol:.1f}x" if last_rvol > 1.0 else ""
             return StrategySignal(
                 "Crypto Momentum Surge", "SELL", 92,
-                f"High-volume breakdown ({close:.4f} < {prior_low:.4f}), RSI {last_rsi:.0f}, ADX {last_adx:.0f}",
+                f"High-volume breakdown ({close:.4f} < {prior_low:.4f}), RSI {last_rsi:.0f}, ADX {last_adx:.0f}{rvol_str}",
             )
         if is_ema_reject:
             return StrategySignal(
@@ -524,24 +561,32 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
                  data: pd.DataFrame | None = None,
                  catalyst: str | None = None) -> SignalReport:
     sl_mult, tp_mult = _sl_tp_mult(symbol)
+    # Calibrate risk distance for 25x leverage (max 2.0% - 2.5% price distance)
+    max_risk_pct = 0.025 if symbol in CRYPTO_MEME else 0.020
+    max_risk_dist = close * max_risk_pct
+
     if action == "BUY":
-        if data is not None and len(data) >= 6:
-            swing_low = float(data.iloc[-6:-1]["low"].min())
-            sl = min(close - atr_val * sl_mult, swing_low - atr_val * 0.8)
+        if data is not None and len(data) >= 15:
+            swing_low = float(data.iloc[-21:-1]["low"].min())
+            sl = min(close - atr_val * sl_mult, swing_low - atr_val * 0.5)
         else:
             sl = close - atr_val * sl_mult
-        risk = max(close - sl, atr_val * 1.0)
+        # 25x leverage risk clamp
+        sl = max(sl, close - max_risk_dist)
+        risk = max(close - sl, atr_val * 0.8)
         tp1 = close + risk * 1.5
         tp2 = close + risk * (tp_mult / sl_mult)
         tp3 = close + risk * 4.0
         tp = tp2
     elif action == "SELL":
-        if data is not None and len(data) >= 6:
-            swing_high = float(data.iloc[-6:-1]["high"].max())
-            sl = max(close + atr_val * sl_mult, swing_high + atr_val * 0.8)
+        if data is not None and len(data) >= 15:
+            swing_high = float(data.iloc[-21:-1]["high"].max())
+            sl = max(close + atr_val * sl_mult, swing_high + atr_val * 0.5)
         else:
             sl = close + atr_val * sl_mult
-        risk = max(sl - close, atr_val * 1.0)
+        # 25x leverage risk clamp
+        sl = min(sl, close + max_risk_dist)
+        risk = max(sl - close, atr_val * 0.8)
         tp1 = close - risk * 1.5
         tp2 = close - risk * (tp_mult / sl_mult)
         tp3 = close - risk * 4.0
@@ -585,24 +630,31 @@ def _quality_gate(
 
     gate_threshold = min_confidence if (min_confidence is not None and min_confidence > 0) else 65
 
-    for cand, direction in [(best_buy, "BUY"), (best_sell, "SELL")]:
-        if cand is None:
-            continue
-        same = buys if direction == "BUY" else sells
+    # Prioritize direction with highest confidence!
+    candidates = []
+    if best_buy is not None:
+        candidates.append((best_buy, "BUY", buys))
+    if best_sell is not None:
+        candidates.append((best_sell, "SELL", sells))
+    candidates.sort(key=lambda item: item[0].confidence, reverse=True)
 
+    for cand, direction, same in candidates:
         catalyst = None
         for s in same:
             if s.name == "News Catalyst Momentum":
                 catalyst = s.reason.split("confirmed by")[0].strip()
 
         # Two different strategies agreeing (Confluence)
-        if len(same) >= 2 and len({s.name for s in same}) >= 2:
-            avg = sum(s.confidence for s in same) // len(same)
-            if avg >= gate_threshold:
+        unique_strategies = {s.name for s in same}
+        if len(unique_strategies) >= 2:
+            base_conf = max(s.confidence for s in same)
+            confluence_bonus = min(4 * (len(unique_strategies) - 1), 8)
+            compounded_conf = min(98, base_conf + confluence_bonus)
+            if compounded_conf >= gate_threshold:
                 reason = " | ".join(s.reason for s in same)
-                return _make_report(symbol, direction, avg, trend, close, atr_val, reason, data=data, catalyst=catalyst)
+                return _make_report(symbol, direction, compounded_conf, trend, close, atr_val, reason, data=data, catalyst=catalyst)
 
-        # Quality Gate threshold (65% confidence)
+        # Quality Gate threshold
         if cand.confidence >= gate_threshold:
             return _make_report(symbol, direction, cand.confidence, trend, close, atr_val, cand.reason, data=data, catalyst=catalyst)
 
@@ -641,7 +693,23 @@ def _analyze_crypto_setup(
 
     report = _quality_gate(strategies, bias, data, symbol, min_confidence)
 
-    # 2. Layer Smart Money Confluence onto report
+    # 2. Active Smart Money VETO: Protect capital if whales or funding directly contradict the signal
+    if sm_metrics and report.action in ("BUY", "SELL"):
+        is_vetoed, veto_reason = sm_metrics.is_vetoed(report.action)
+        if is_vetoed:
+            return SignalReport(
+                symbol=report.symbol,
+                action="WAIT",
+                confidence=45,
+                trend=report.trend,
+                entry=None,
+                stop_loss=None,
+                take_profit=None,
+                reason=f"⛔ {veto_reason} (Signal vetoed to protect capital)",
+                smart_money=sm_metrics.summary_text,
+            )
+
+    # 3. Layer Smart Money Confluence onto report
     if sm_metrics and sm_metrics.summary_text:
         conf = report.confidence
         if report.action == "BUY" and sm_metrics.bias == "BULLISH":
@@ -827,6 +895,11 @@ def _forex_london_ny_displacement(data: pd.DataFrame, session_key: str | None, s
     a_low = float(asian["low"].min())
     candle_size = float(last["high"] - last["low"])
 
+    # Displacements outside Asian range must happen during London or NY (hour >= 7)
+    last_hour = last["time"].hour if hasattr(last["time"], "hour") else 8
+    if last_hour < 7:
+        return StrategySignal("London/NY Displacement", "HOLD", 0, "")
+
     if close > a_high and prev["close"] <= a_high and candle_size >= 0.9 * atr_val and close > last["open"]:
         return StrategySignal(
             "London/NY Displacement",
@@ -891,6 +964,7 @@ def _forex_structural_sl_tp(
     """
     Computes institutional structural SL (behind swing low/high + buffer)
     and multi-tier Take Profit targets (TP1 1:1.5, TP2 1:2.5, TP3 1:3.5).
+    Enforces maximum 2.2% leverage distance cap for 25x survival.
     """
     if symbol in ("XAU_USD", "US30"):
         min_buffer = atr_val * 2.0 if atr_val > 0 else 3.5
@@ -899,22 +973,28 @@ def _forex_structural_sl_tp(
     else:
         min_buffer = max(atr_val * 1.8, 0.0018)
 
+    max_risk_dist = close * 0.022  # Max 2.2% price risk for 25x leverage
+
     if action == "BUY":
-        if len(data) >= 8:
-            swing_low = float(data.iloc[-8:-1]["low"].min())
+        if len(data) >= 15:
+            swing_low = float(data.iloc[-25:-1]["low"].min())
             sl = min(close - min_buffer, swing_low - atr_val * 0.4)
         else:
             sl = close - min_buffer
+        # 25x leverage risk clamp
+        sl = max(sl, close - max_risk_dist)
         risk = max(close - sl, min_buffer)
         tp1 = close + risk * 1.5
         tp2 = close + risk * 2.5
         tp3 = close + risk * 3.5
     elif action == "SELL":
-        if len(data) >= 8:
-            swing_high = float(data.iloc[-8:-1]["high"].max())
+        if len(data) >= 15:
+            swing_high = float(data.iloc[-25:-1]["high"].max())
             sl = max(close + min_buffer, swing_high + atr_val * 0.4)
         else:
             sl = close + min_buffer
+        # 25x leverage risk clamp
+        sl = min(sl, close + max_risk_dist)
         risk = max(sl - close, min_buffer)
         tp1 = close - risk * 1.5
         tp2 = close - risk * 2.5
@@ -943,6 +1023,19 @@ def _analyze_forex_setup(
 
     is_session_active, session_name = _forex_session_filter(data, symbol)
 
+    # Front-gate off-hours sessions: Spreads widen drastically and institutional liquidity is absent
+    if not is_session_active:
+        return SignalReport(
+            symbol=DISPLAY_NAMES.get(symbol, symbol),
+            action="WAIT",
+            confidence=40,
+            trend=trend,
+            entry=None,
+            stop_loss=None,
+            take_profit=None,
+            reason=f"Off-hours: {session_name}. Institutional volume lowest and broker spreads widen.",
+        )
+
     strategies = [
         _forex_ict_liquidity_sweep(data, symbol),
         _forex_fvg_retest(data, symbol),
@@ -958,20 +1051,27 @@ def _analyze_forex_setup(
 
     gate_threshold = min_confidence if (min_confidence is not None and min_confidence > 0) else 65
 
-    for cand, direction in [(best_buy, "BUY"), (best_sell, "SELL")]:
-        if cand is None:
-            continue
-        same = buys if direction == "BUY" else sells
+    # Prioritize direction with highest confidence!
+    candidates = []
+    if best_buy is not None:
+        candidates.append((best_buy, "BUY", buys))
+    if best_sell is not None:
+        candidates.append((best_sell, "SELL", sells))
+    candidates.sort(key=lambda item: item[0].confidence, reverse=True)
 
-        if len(same) >= 2 and len({s.name for s in same}) >= 2:
-            avg = sum(s.confidence for s in same) // len(same)
-            if avg >= gate_threshold:
+    for cand, direction, same in candidates:
+        unique_strategies = {s.name for s in same}
+        if len(unique_strategies) >= 2:
+            base_conf = max(s.confidence for s in same)
+            confluence_bonus = min(4 * (len(unique_strategies) - 1), 8)
+            compounded_conf = min(98, base_conf + confluence_bonus)
+            if compounded_conf >= gate_threshold:
                 reason = " | ".join(s.reason for s in same)
                 sl, tp1, tp2, tp3 = _forex_structural_sl_tp(symbol, direction, close, atr_val, data)
                 return SignalReport(
                     symbol=DISPLAY_NAMES.get(symbol, symbol),
                     action=direction,
-                    confidence=avg,
+                    confidence=compounded_conf,
                     trend=trend,
                     entry=close,
                     stop_loss=sl,
@@ -998,22 +1098,9 @@ def _analyze_forex_setup(
                 tp3=tp3,
             )
 
-    # If off session and no institutional setup
-    if not is_session_active:
-        return SignalReport(
-            symbol=DISPLAY_NAMES.get(symbol, symbol),
-            action="WAIT",
-            confidence=40,
-            trend=trend,
-            entry=None,
-            stop_loss=None,
-            take_profit=None,
-            reason=f"{session_name}. Institutional volume lowest during off-hours.",
-        )
-
     # Fallback to multi-factor scoring during active session
     fb_action, fb_conf, fb_reason, long_s, short_s = _fallback_scoring(data)
-    if fb_action != "WAIT" and fb_conf >= gate_threshold and is_session_active:
+    if fb_action != "WAIT" and fb_conf >= gate_threshold:
         sl, tp1, tp2, tp3 = _forex_structural_sl_tp(symbol, fb_action, close, atr_val, data)
         return SignalReport(
             symbol=DISPLAY_NAMES.get(symbol, symbol),

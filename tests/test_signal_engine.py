@@ -271,8 +271,21 @@ class TestQualityGate:
         ]
         report = _quality_gate(strategies, "neutral", data, "BTC_USD", 60)
         assert report.action == "BUY"
-        assert report.confidence == 82
+        # Compounded confidence: 84 + 4 = 88 (not diluted to 82)
+        assert report.confidence == 88
         assert "Reason A | Reason B" in report.reason
+
+    def test_highest_conviction_direction_wins(self):
+        """Ensure SELL with 92% confidence wins over BUY with 78% confidence (no hardcoded BUY bias)."""
+        data = compute_indicators(_ohcv_close([1.0] * 100))
+        strategies = [
+            StrategySignal("Weak Buy", "BUY", 78, "Weak bounce"),
+            StrategySignal("Strong Sell", "SELL", 92, "Institutional breakdown"),
+        ]
+        report = _quality_gate(strategies, "neutral", data, "BTC_USD", 60)
+        assert report.action == "SELL"
+        assert report.confidence == 92
+        assert "Institutional breakdown" in report.reason
 
 
 # ============================== INTEGRATION ==============================
@@ -337,3 +350,83 @@ class TestMeanReversionCryptoAware:
         data = compute_indicators(_ohcv_close([1.0] * 100))
         sig = _mean_reversion(data, "BTC_USD")
         assert sig.action in ("BUY", "SELL", "HOLD")
+
+
+class TestSmartMoneyVeto:
+    def test_buy_vetoed_when_whales_are_short(self):
+        from bot.binance_engine import BinanceSmartMoneyMetrics
+        metrics = BinanceSmartMoneyMetrics(
+            symbol="BTC_USD",
+            top_trader_long_pct=35.0,  # 65% short
+            top_trader_ls_ratio=0.54,
+        )
+        is_vetoed, reason = metrics.is_vetoed("BUY")
+        assert is_vetoed is True
+        assert "Top Trader Whales are heavily short" in reason
+
+    def test_buy_vetoed_when_funding_overheated(self):
+        from bot.binance_engine import BinanceSmartMoneyMetrics
+        metrics = BinanceSmartMoneyMetrics(
+            symbol="BTC_USD",
+            funding_rate_pct=0.045,  # Overheated long flush risk
+        )
+        is_vetoed, reason = metrics.is_vetoed("BUY")
+        assert is_vetoed is True
+        assert "Funding rate overheated" in reason
+
+    def test_sell_vetoed_when_whales_are_long(self):
+        from bot.binance_engine import BinanceSmartMoneyMetrics
+        metrics = BinanceSmartMoneyMetrics(
+            symbol="ETH_USD",
+            top_trader_long_pct=68.0,  # 68% long
+            top_trader_ls_ratio=2.12,
+        )
+        is_vetoed, reason = metrics.is_vetoed("SELL")
+        assert is_vetoed is True
+        assert "Top Trader Whales are heavily long" in reason
+
+    def test_sell_vetoed_when_funding_negative_squeeze(self):
+        from bot.binance_engine import BinanceSmartMoneyMetrics
+        metrics = BinanceSmartMoneyMetrics(
+            symbol="SOL_USD",
+            funding_rate_pct=-0.035,  # Extreme short squeeze risk
+        )
+        is_vetoed, reason = metrics.is_vetoed("SELL")
+        assert is_vetoed is True
+        assert "short squeeze" in reason
+
+
+class TestLeverageStopLossClamp:
+    def test_forex_sl_clamped_for_25x_leverage(self):
+        prices = _ohcv_close([100.0] * 100)
+        prices.loc[80, "low"] = 70.0
+        data = compute_indicators(prices)
+        sl, tp1, tp2, tp3 = _forex_structural_sl_tp("EUR_USD", "BUY", 100.0, 0.5, data)
+        # The SL distance must not exceed 2.2% of price (100.0 * 0.022 = 2.2 => sl >= 97.8)
+        assert sl >= 97.8
+
+    def test_crypto_sl_clamped_for_25x_leverage(self):
+        from bot.signal_engine import _make_report
+        prices = _ohcv_close([100.0] * 100)
+        prices.loc[80, "low"] = 70.0
+        data = compute_indicators(prices)
+        report = _make_report("BTC_USD", "BUY", 90, "Bullish", 100.0, 0.5, "Breakout", data=data)
+        # BTC is large cap: max risk is 2.0% => sl >= 98.0
+        assert report.stop_loss is not None
+        assert report.stop_loss >= 98.0
+
+
+class TestForexSessionGate:
+    def test_forex_off_hours_blocked(self):
+        # 22:00 UTC is off-hours rollover
+        times = pd.date_range("2025-01-01 22:00:00", periods=100, freq="15min", tz="UTC")
+        prices = pd.DataFrame({
+            "time": times,
+            "open": [1.10] * 100,
+            "high": [1.11] * 100,
+            "low": [1.09] * 100,
+            "close": [1.10] * 100,
+        })
+        report = analyze_setup("EUR_USD", prices)
+        assert report.action == "WAIT"
+        assert "Off-hours" in report.reason

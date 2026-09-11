@@ -43,6 +43,31 @@ class BinanceSmartMoneyMetrics:
     bias: str = "NEUTRAL"
     summary_text: str = ""
 
+    def is_vetoed(self, action: str) -> tuple[bool, str]:
+        """
+        Active Institutional VETO:
+        Returns (True, reason) if institutional positioning (whales, funding rate, taker delta)
+        directly opposes the intended trade direction, meaning retail is being trapped.
+        """
+        if action == "BUY":
+            if self.top_trader_long_pct is not None and self.top_trader_long_pct <= 42.0:
+                short_pct = 100.0 - self.top_trader_long_pct
+                return True, f"VETO: Top Trader Whales are heavily short ({short_pct:.1f}% short, L/S: {self.top_trader_ls_ratio:.2f})"
+            if self.funding_rate_pct is not None and self.funding_rate_pct >= 0.035:
+                return True, f"VETO: Funding rate overheated ({self.funding_rate_pct:+.4f}%), severe long liquidation cascade risk"
+            if self.taker_buy_pct is not None and self.taker_buy_pct <= 38.0:
+                return True, f"VETO: Heavy aggressive taker selling ({100.0 - self.taker_buy_pct:.1f}% sells)"
+
+        elif action == "SELL":
+            if self.top_trader_long_pct is not None and self.top_trader_long_pct >= 58.0:
+                return True, f"VETO: Top Trader Whales are heavily long ({self.top_trader_long_pct:.1f}% long, L/S: {self.top_trader_ls_ratio:.2f})"
+            if self.funding_rate_pct is not None and self.funding_rate_pct <= -0.020:
+                return True, f"VETO: Funding rate deeply negative ({self.funding_rate_pct:+.4f}%), high risk of short squeeze"
+            if self.taker_buy_pct is not None and self.taker_buy_pct >= 62.0:
+                return True, f"VETO: Heavy aggressive taker buying ({self.taker_buy_pct:.1f}% buys)"
+
+        return False, ""
+
 
 def get_binance_symbol_pair(symbol: str) -> tuple[str | None, str | None]:
     """
