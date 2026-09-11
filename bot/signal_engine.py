@@ -71,9 +71,9 @@ class SignalReport:
             f"{action_guide}"
             f"Entry: {_fmt_price(self.entry)}\n"
             f"Stop Loss: {_fmt_price(self.stop_loss)}\n"
-            f"TP 1 (1:1.5): {_fmt_price(tp1_val)} <i>(Close 50% & SL to BE)</i>\n"
-            f"TP 2 (1:2.5): {_fmt_price(tp2_val)} <i>(Close 30%)</i>\n"
-            f"TP 3 (1:4.0): {_fmt_price(tp3_val)} <i>(Runner 20%)</i>\n"
+            f"TP 1 (1:1.0): {_fmt_price(tp1_val)} <i>(Pure 1:1 Target)</i>\n"
+            f"TP 2 (1:2.0): {_fmt_price(tp2_val)} <i>(Runner Target)</i>\n"
+            f"TP 3 (1:3.5): {_fmt_price(tp3_val)} <i>(Max Extension)</i>\n"
             f"{catalyst_line}"
             f"{smart_money_block}"
             f"Reason: {safe_reason}"
@@ -282,14 +282,23 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
 
     last_rvol = float(last["rvol"]) if "rvol" in last and pd.notna(last["rvol"]) else 1.2
 
-    bull_trend = last["ema20"] > last["ema50"] and close > last["ema20"] * 0.998
-    bear_trend = last["ema20"] < last["ema50"] and close < last["ema20"] * 1.002
+    has_ema200 = "ema200" in last and pd.notna(last["ema200"])
+    macro_bull = (close >= last["ema200"] * 0.998 and last["ema50"] >= last["ema200"] * 0.995) if has_ema200 else True
+    macro_bear = (close <= last["ema200"] * 1.002 and last["ema50"] <= last["ema200"] * 1.005) if has_ema200 else True
+
+    bull_trend = macro_bull and last["ema20"] > last["ema50"] and close > last["ema20"] * 0.998
+    bear_trend = macro_bear and last["ema20"] < last["ema50"] and close < last["ema20"] * 1.002
 
     if bull_trend and 48 <= last_rsi <= 75 and last["macd_hist"] > 0:
-        is_breakout = close > prior_high and close > open_p and body >= 0.40 * total_range
-        is_ema_bounce = prev["low"] <= last["ema20"] * 1.003 and close >= last["ema20"]
+        is_breakout = close > prior_high and close > open_p and body >= 0.35 * total_range and last_rvol >= 1.20 and last_adx >= 20
+        is_ema_bounce = (
+            prev["low"] <= last["ema20"] * 1.003
+            and close >= last["ema20"]
+            and last_adx >= 20
+            and (check_rejection(last, "buy") or (close > open_p and body >= 0.30 * total_range))
+        )
 
-        if is_breakout and last_rvol >= 1.1:
+        if is_breakout:
             rvol_str = f", RVol {last_rvol:.1f}x" if last_rvol > 1.0 else ""
             return StrategySignal(
                 "Crypto Momentum Surge", "BUY", 92,
@@ -302,10 +311,15 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
             )
 
     if bear_trend and 25 <= last_rsi <= 52 and last["macd_hist"] < 0:
-        is_breakdown = close < prior_low and close < open_p and body >= 0.40 * total_range
-        is_ema_reject = prev["high"] >= last["ema20"] * 0.997 and close <= last["ema20"]
+        is_breakdown = close < prior_low and close < open_p and body >= 0.35 * total_range and last_rvol >= 1.20 and last_adx >= 20
+        is_ema_reject = (
+            prev["high"] >= last["ema20"] * 0.997
+            and close <= last["ema20"]
+            and last_adx >= 20
+            and (check_rejection(last, "sell") or (close < open_p and body >= 0.30 * total_range))
+        )
 
-        if is_breakdown and last_rvol >= 1.1:
+        if is_breakdown:
             rvol_str = f", RVol {last_rvol:.1f}x" if last_rvol > 1.0 else ""
             return StrategySignal(
                 "Crypto Momentum Surge", "SELL", 92,
@@ -574,10 +588,10 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
         # 25x leverage risk clamp
         sl = max(sl, close - max_risk_dist)
         risk = max(close - sl, atr_val * 0.8)
-        tp1 = close + risk * 1.5
+        tp1 = close + risk * 1.0  # Pure 1:1 TP1
         tp2 = close + risk * (tp_mult / sl_mult)
         tp3 = close + risk * 4.0
-        tp = tp2
+        tp = tp1
     elif action == "SELL":
         if data is not None and len(data) >= 15:
             swing_high = float(data.iloc[-21:-1]["high"].max())
@@ -587,10 +601,10 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
         # 25x leverage risk clamp
         sl = min(sl, close + max_risk_dist)
         risk = max(sl - close, atr_val * 0.8)
-        tp1 = close - risk * 1.5
+        tp1 = close - risk * 1.0  # Pure 1:1 TP1
         tp2 = close - risk * (tp_mult / sl_mult)
         tp3 = close - risk * 4.0
-        tp = tp2
+        tp = tp1
     else:
         sl = tp = tp1 = tp2 = tp3 = None
 
@@ -984,8 +998,8 @@ def _forex_structural_sl_tp(
         # 25x leverage risk clamp
         sl = max(sl, close - max_risk_dist)
         risk = max(close - sl, min_buffer)
-        tp1 = close + risk * 1.5
-        tp2 = close + risk * 2.5
+        tp1 = close + risk * 1.0  # Pure 1:1 TP1
+        tp2 = close + risk * 2.0
         tp3 = close + risk * 3.5
     elif action == "SELL":
         if len(data) >= 15:
@@ -996,8 +1010,8 @@ def _forex_structural_sl_tp(
         # 25x leverage risk clamp
         sl = min(sl, close + max_risk_dist)
         risk = max(sl - close, min_buffer)
-        tp1 = close - risk * 1.5
-        tp2 = close - risk * 2.5
+        tp1 = close - risk * 1.0  # Pure 1:1 TP1
+        tp2 = close - risk * 2.0
         tp3 = close - risk * 3.5
     else:
         sl = tp1 = tp2 = tp3 = 0.0

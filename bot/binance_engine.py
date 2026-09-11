@@ -165,8 +165,8 @@ def fetch_binance_derivatives(symbol: str, timeout: float = 1.5) -> dict:
     if not fut_sym:
         return {}
 
-    # Skip unmocked live network calls in automated test suite
-    if os.getenv("PYTEST_CURRENT_TEST") and not (hasattr(_SESSION.get, "mock_calls") or hasattr(requests.get, "mock_calls")):
+    # Skip unmocked live network calls in automated test suite or backtests
+    if (os.getenv("PYTEST_CURRENT_TEST") or os.getenv("BACKTEST_MODE")) and not (hasattr(_SESSION.get, "mock_calls") or hasattr(requests.get, "mock_calls")):
         return {}
 
     data: dict = {}

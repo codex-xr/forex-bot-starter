@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 from unittest.mock import MagicMock, patch
 from bot.news_engine import analyze_headline_sentiment, NewsArticle, format_news_summary
 from bot.signal_engine import SignalReport
@@ -73,10 +73,10 @@ class TestNewsEngine(unittest.TestCase):
             catalyst="Trump Strategic Reserve Announcement",
         )
         msg = r.to_message()
-        self.assertIn("TP 1 (1:1.5)", msg)
+        self.assertIn("TP 1 (1:1.0)", msg)
         self.assertIn("1.10750", msg)
-        self.assertIn("TP 2 (1:2.5)", msg)
+        self.assertIn("TP 2 (1:2.0)", msg)
         self.assertIn("1.11250", msg)
-        self.assertIn("TP 3 (1:4.0)", msg)
+        self.assertIn("TP 3 (1:3.5)", msg)
         self.assertIn("1.12000", msg)
         self.assertIn("News Catalyst", msg)

@@ -168,6 +168,10 @@ def fetch_latest_news(limit: int = 15, force_refresh: bool = False) -> list[News
     Fetches real-time crypto & macro news from live institutional feeds (CoinTelegraph, Decrypt).
     Caches results for 120 seconds to optimize performance and prevent rate limiting.
     """
+    import os
+    if os.getenv("BACKTEST_MODE") or os.getenv("PYTEST_CURRENT_TEST"):
+        return []
+
     global _NEWS_CACHE, _NEWS_CACHE_TIME
     import time
     now = time.time()
