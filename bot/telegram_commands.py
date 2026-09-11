@@ -37,6 +37,8 @@ from bot.paper_engine import (
     set_leverage,
     close_all_open_trades,
     get_paper_settings,
+    reset_trade_history,
+    reset_paper_account,
 )
 from bot.session_bot import build_session_scan, build_session_message, ALL_WATCHLIST
 from bot.signal_engine import analyze_setup
@@ -161,6 +163,8 @@ Tap any button below or type a command to scan the market:
 • <code>/enter &lt;symbol&gt;</code> — Enter a paper trade manually (e.g. <code>/enter BTC</code>)
 • <code>/close &lt;symbol&gt;</code> — Close an active paper trade (or <code>/closeall</code>)
 • <code>/history</code> — View recent closed trade history
+• <code>/resethistory</code> — Clear trade history & reset PnL stats
+• <code>/resetaccount [amt]</code> — Full paper account factory reset
 
 📰 <b>Breaking News & Catalysts:</b>
 • <code>/news</code> — Real-time Crypto, Trump & Macro Sentiment Monitor
@@ -544,6 +548,24 @@ def handle_message(message: dict) -> None:
 
         if command in {"/history", "/trades_history"}:
             send_telegram_message(get_trade_history_report(), chat_id=chat_id)
+            return
+
+        if command in {"/resethistory", "/resetpnl", "/clearhistory", "/clearpnl"}:
+            ok, msg = reset_trade_history()
+            send_telegram_message(msg, chat_id=chat_id)
+            return
+
+        if command in {"/resetaccount", "/resetpaper", "/resetall", "/factoryreset"}:
+            starting_balance = 10000.0
+            if subcmd:
+                clean_val = subcmd.replace("$", "").replace(",", "").strip()
+                try:
+                    starting_balance = float(clean_val)
+                except ValueError:
+                    send_telegram_message("❌ Invalid balance. Usage: <code>/resetaccount [starting_balance]</code> (e.g. <code>/resetaccount 10000</code>)", chat_id=chat_id)
+                    return
+            ok, msg = reset_paper_account(starting_balance)
+            send_telegram_message(msg, chat_id=chat_id)
             return
 
         if command in {"/setbalance", "/paper_balance"}:

@@ -276,6 +276,53 @@ def get_paper_settings() -> dict:
     return asdict(store.settings)
 
 
+def reset_trade_history() -> tuple[bool, str]:
+    """
+    Clears all closed trade history and resets all-time/daily PnL statistics.
+    Leaves active open positions and current virtual balance unchanged.
+    """
+    store = _load_paper_store()
+    closed_count = len(store.history)
+    store.history = []
+    _save_paper_store(store)
+    return True, (
+        f"🧹 <b>Trade History &amp; PnL Reset!</b>\n\n"
+        f"• Cleared <b>{closed_count}</b> closed trade record(s).\n"
+        f"• Daily and All-Time PnL metrics have been reset to <b>$0.00</b>.\n"
+        f"• <b>Current Balance:</b> <code>${store.settings.virtual_balance:,.2f}</code>\n"
+        f"• <b>Active Positions:</b> <code>{len(store.positions)}</code> running."
+    )
+
+
+def reset_paper_account(starting_balance: float = 10000.0) -> tuple[bool, str]:
+    """
+    Performs a complete factory reset of the paper trading account:
+    - Closes/clears all open positions
+    - Clears all trade history & PnL
+    - Resets virtual balance to starting_balance (default $10,000)
+    """
+    if starting_balance <= 0:
+        return False, "❌ Starting balance must be greater than $0."
+
+    store = _load_paper_store()
+    pos_count = len(store.positions)
+    hist_count = len(store.history)
+
+    store.positions = {}
+    store.history = []
+    store.settings.virtual_balance = round(starting_balance, 2)
+    _save_paper_store(store)
+
+    return True, (
+        f"🔄 <b>Paper Trading Account Fully Reset!</b>\n\n"
+        f"• <b>Virtual Balance:</b> <code>${store.settings.virtual_balance:,.2f}</code>\n"
+        f"• <b>Active Positions:</b> Cleared (<b>{pos_count}</b> removed)\n"
+        f"• <b>Trade History:</b> Wiped (<b>{hist_count}</b> records removed)\n"
+        f"• <b>PnL:</b> Reset to <b>$0.00</b>\n\n"
+        f"<i>Ready for fresh forward testing! Use <code>/menu</code> or scans (<code>/c1</code>, <code>/m1</code>, <code>/f1</code>) to start.</i>"
+    )
+
+
 def open_paper_trade(
     symbol: str,
     action: str,

@@ -68,6 +68,8 @@ def register_telegram_commands() -> dict:
         {"command": "enter", "description": "🚀 Enter Paper Trade (/enter BTC)"},
         {"command": "close", "description": "❌ Close Paper Trade (/close BTC)"},
         {"command": "history", "description": "📜 Recent Paper Trade History"},
+        {"command": "resethistory", "description": "🧹 Clear History & Reset PnL"},
+        {"command": "resetaccount", "description": "🔄 Full Paper Account Reset"},
         {"command": "setbalance", "description": "💼 Set Virtual Balance (/setbalance 10000)"},
         {"command": "setsize", "description": "⚙️ Set Trade Margin (/setsize 500)"},
         {"command": "setleverage", "description": "⚡ Set Leverage (/setleverage 10x)"},

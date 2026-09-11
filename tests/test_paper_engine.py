@@ -20,6 +20,8 @@ from bot.paper_engine import (
     get_daily_summary_report,
     get_trade_history_report,
     close_all_open_trades,
+    reset_trade_history,
+    reset_paper_account,
     _load_paper_store,
     _save_paper_store,
     _load_from_cloud,
@@ -318,3 +320,41 @@ class TestCloudPersistence:
             ok = _save_to_cloud(store)
             assert ok is True
             assert mock_post.called
+
+
+class TestResetFunctions:
+    def test_reset_trade_history(self):
+        # Open and close a trade to populate history
+        open_paper_trade("BTC_USD", "BUY", 50000.0, 48000.0, 55000.0)
+        close_paper_trade("BTC_USD", 55000.0, reason="TP1_HIT")
+        # Open an ongoing trade
+        open_paper_trade("ETH_USD", "BUY", 3000.0, 2800.0, 3300.0)
+
+        store = _load_paper_store()
+        assert len(store.history) == 1
+        assert len(store.positions) == 1
+
+        ok, msg = reset_trade_history()
+        assert ok is True
+        assert "Trade History" in msg
+        assert "PnL Reset" in msg
+
+        store = _load_paper_store()
+        assert len(store.history) == 0
+        assert len(store.positions) == 1  # Active positions remain intact
+
+    def test_reset_paper_account(self):
+        # Populate open positions and history
+        open_paper_trade("BTC_USD", "BUY", 50000.0, 48000.0, 55000.0)
+        close_paper_trade("BTC_USD", 55000.0, reason="TP1_HIT")
+        open_paper_trade("ETH_USD", "BUY", 3000.0, 2800.0, 3300.0)
+
+        ok, msg = reset_paper_account(starting_balance=25000.0)
+        assert ok is True
+        assert "Paper Trading Account Fully Reset" in msg
+        assert "$25,000.00" in msg
+
+        store = _load_paper_store()
+        assert len(store.positions) == 0
+        assert len(store.history) == 0
+        assert store.settings.virtual_balance == 25000.0
