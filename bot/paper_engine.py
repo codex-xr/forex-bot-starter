@@ -8,7 +8,7 @@ from pathlib import Path
 import requests
 
 from bot.market_data import fetch_live_candles
-from bot.symbols import DISPLAY_NAMES
+from bot.symbols import DISPLAY_NAMES, normalize_symbol
 
 # Cloud Persistence (Upstash Redis)
 UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
@@ -288,6 +288,7 @@ def open_paper_trade(
     """
     Opens a simulated paper trade with exact TP1 and SL limits and leverage.
     """
+    symbol = normalize_symbol(symbol)
     store = _load_paper_store()
 
     clean_action = action.upper()
@@ -372,8 +373,13 @@ def close_paper_trade(
     position = store.positions.get(pos_id)
     if not position:
         # Search by symbol match if pos_id is symbol name
+        norm_sym = normalize_symbol(pos_id)
         for pid, p in store.positions.items():
-            if p.symbol.lower() == pos_id.lower() or p.display_symbol.lower().replace("/", "_") == pos_id.lower().replace("/", "_"):
+            if (
+                p.symbol.lower() == pos_id.lower()
+                or p.symbol.lower() == norm_sym.lower()
+                or p.display_symbol.lower().replace("/", "_") == pos_id.lower().replace("/", "_")
+            ):
                 position = p
                 pos_id = pid
                 break

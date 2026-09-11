@@ -7,7 +7,7 @@ import requests
 from dotenv import load_dotenv
 
 from bot.data import load_price_data
-from bot.symbols import DEX_POOLS, SYMBOL_ALIASES, BINANCE_SYMBOLS
+from bot.symbols import DEX_POOLS, SYMBOL_ALIASES, BINANCE_SYMBOLS, normalize_symbol
 
 
 def _map_interval_to_binance(interval: str) -> str:
@@ -56,6 +56,7 @@ def fetch_dex_candles(network: str, pool_address: str, aggregate: int = 15, limi
 
 
 def fetch_live_candles(symbol: str, interval: str = "15min", outputsize: int = 100) -> pd.DataFrame:
+    symbol = normalize_symbol(symbol)
     # 1. Specialized Solana DEX Pools (e.g. $ANSEM)
     if symbol in DEX_POOLS:
         network, pool = DEX_POOLS[symbol]

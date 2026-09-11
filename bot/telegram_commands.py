@@ -40,7 +40,7 @@ from bot.paper_engine import (
 )
 from bot.session_bot import build_session_scan, build_session_message, ALL_WATCHLIST
 from bot.signal_engine import analyze_setup
-from bot.symbols import DISPLAY_NAMES
+from bot.symbols import DISPLAY_NAMES, normalize_symbol
 from bot.telegram import send_telegram_message, telegram_request
 
 
@@ -232,7 +232,7 @@ def handle_callback_query(callback_query: dict) -> None:
     if data.startswith("paper_enter:"):
         parts = data.split(":")
         if len(parts) >= 3:
-            symbol = parts[1]
+            symbol = normalize_symbol(parts[1])
             action = parts[2]
             try:
                 candles = fetch_live_candles(symbol)
@@ -620,14 +620,7 @@ def handle_message(message: dict) -> None:
                     chat_id=chat_id,
                 )
                 return
-            sym_raw = subcmd.upper().replace("/", "_")
-            target_sym = None
-            for s in ALL_WATCHLIST:
-                if s.upper() == sym_raw or s.split("_")[0].upper() == sym_raw or s.replace("_", "").upper() == sym_raw:
-                    target_sym = s
-                    break
-            if not target_sym:
-                target_sym = f"{sym_raw}_USD" if not sym_raw.endswith("_USD") else sym_raw
+            target_sym = normalize_symbol(subcmd)
 
             try:
                 candles = fetch_live_candles(target_sym)
@@ -655,13 +648,7 @@ def handle_message(message: dict) -> None:
                     chat_id=chat_id,
                 )
                 return
-            sym_input = subcmd.upper().replace("/", "_")
-            target_sym = None
-            for s in ALL_WATCHLIST:
-                if s.upper() == sym_input or s.split("_")[0].upper() == sym_input:
-                    target_sym = s
-                    break
-            target_sym = target_sym or sym_input
+            target_sym = normalize_symbol(subcmd)
             curr_price = 0.0
             try:
                 candles = fetch_live_candles(target_sym)

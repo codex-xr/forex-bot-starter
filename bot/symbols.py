@@ -135,7 +135,38 @@ PIP_VALUES = {
     "BOME_USD": 0.00001,
     "PENGU_USD": 0.00001,
     "MOG_USD": 0.000000001,
-    "PEOPLE_USD": 0.00001,
-    "ELON_USD": 0.0000000001,
 }
+
+
+def normalize_symbol(symbol: str) -> str:
+    """
+    Normalizes any user or UI symbol variant (e.g. 'FLOKIUSD', 'FLOKI', 'floki_usd', 'EUR/USD')
+    to the canonical system symbol (e.g. 'FLOKI_USD', 'EUR_USD').
+    """
+    if not symbol:
+        return ""
+    clean = symbol.strip().upper().replace("/", "_").replace("-", "_").replace(" ", "_")
+
+    # 1. Exact match in DISPLAY_NAMES keys
+    if clean in DISPLAY_NAMES:
+        return clean
+
+    # 2. Match against DISPLAY_NAMES values (e.g. 'FLOKIUSD' -> 'FLOKI_USD')
+    for canonical, display in DISPLAY_NAMES.items():
+        if clean == display.upper() or clean.replace("_", "") == display.upper().replace("_", ""):
+            return canonical
+
+    # 3. Match against base symbol (e.g. 'FLOKI' -> 'FLOKI_USD', 'BTC' -> 'BTC_USD')
+    for canonical in DISPLAY_NAMES:
+        base = canonical.split("_")[0]
+        if clean == base or clean.replace("_", "") == base:
+            return canonical
+
+    # 4. Fallback if ends without _USD
+    if not clean.endswith("_USD") and not clean.endswith("_USDT") and clean != "US30":
+        trial = f"{clean}_USD"
+        if trial in DISPLAY_NAMES:
+            return trial
+
+    return clean
 

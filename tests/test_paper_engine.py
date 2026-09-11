@@ -161,6 +161,22 @@ class TestPaperTradeLifecycle:
         assert ok is True
         assert "Manually Closed" in msg
 
+    def test_open_and_close_with_unnormalized_symbol(self):
+        ok, msg, pos = open_paper_trade("FLOKIUSD", "BUY", 0.00015, 0.00014, 0.00017)
+        assert ok is True
+        assert pos["symbol"] == "FLOKI_USD"
+        assert pos["display_symbol"] == "FLOKIUSD"
+
+        # Prevent duplicate with alternate symbol syntax
+        dup_ok, dup_msg, _ = open_paper_trade("FLOKI_USD", "BUY", 0.00015, 0.00014, 0.00017)
+        assert dup_ok is False
+        assert "Active position already exists" in dup_msg
+
+        # Close using shorthand / lowercase alias
+        close_ok, close_msg, _ = close_paper_trade("floki", 0.00017, reason="MANUAL_CLOSE")
+        assert close_ok is True
+        assert "FLOKIUSD" in close_msg
+
     def test_close_all_open_trades(self):
         open_paper_trade("BTC_USD", "BUY", 60000.0, 58000.0, 65000.0)
         open_paper_trade("ETH_USD", "BUY", 3000.0, 2900.0, 3200.0)
