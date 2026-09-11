@@ -66,6 +66,7 @@ COMMANDS = {
 def get_menu_keyboard(is_admin_user: bool = False) -> dict:
     """Builds interactive Telegram inline buttons for instant 1-tap commands."""
     keyboard = [
+        # 1. Market Scans
         [
             {"text": "📈 Forex Majors (/f1)", "callback_data": "/f1"},
             {"text": "🏆 Gold & Crosses (/f2)", "callback_data": "/f2"},
@@ -78,17 +79,33 @@ def get_menu_keyboard(is_admin_user: bool = False) -> dict:
             {"text": "🐶 Top Memes (/m1)", "callback_data": "/m1"},
             {"text": "🐸 Trending Memes (/m2)", "callback_data": "/m2"},
         ],
+        # 2. Paper Trading Monitor
         [
-            {"text": "📊 Live Trades (/status)", "callback_data": "/status"},
+            {"text": "📊 Live Positions (/status)", "callback_data": "/status"},
             {"text": "📅 Daily PnL (/summary)", "callback_data": "/summary"},
         ],
         [
-            {"text": "📰 Breaking News", "callback_data": "/news"},
-            {"text": "🤖 Auto-Pilot", "callback_data": "/autopilot"},
+            {"text": "📜 Trade History (/history)", "callback_data": "/history"},
+            {"text": "❌ Close All Trades (/closeall)", "callback_data": "/closeall"},
+        ],
+        # 3. Position Sizing & Leverage
+        [
+            {"text": "⚡ Leverage Multiplier (/setleverage)", "callback_data": "/setleverage"},
+            {"text": "⚙️ Trade Margin (/setsize)", "callback_data": "/setsize"},
         ],
         [
-            {"text": "ℹ️ My Subscription", "callback_data": "/myplan"},
-            {"text": "📜 Trade History", "callback_data": "/history"},
+            {"text": "💼 Virtual Capital (/setbalance)", "callback_data": "/setbalance"},
+            {"text": "🧹 Reset History & PnL (/resethistory)", "callback_data": "/resethistory"},
+        ],
+        # 4. Intelligence & Automation
+        [
+            {"text": "📰 Breaking News (/news)", "callback_data": "/news"},
+            {"text": "🤖 Auto-Pilot 24/7 (/autopilot)", "callback_data": "/autopilot"},
+        ],
+        # 5. Account & Reset
+        [
+            {"text": "ℹ️ My Subscription (/myplan)", "callback_data": "/myplan"},
+            {"text": "🔄 Reset Account (/resetaccount)", "callback_data": "/resetaccount"},
         ],
     ]
     if is_admin_user:
@@ -96,12 +113,16 @@ def get_menu_keyboard(is_admin_user: bool = False) -> dict:
             {"text": "👑 Master Admin Panel (/admin)", "callback_data": "/admin"},
         ])
         keyboard.append([
-            {"text": "👥 User Dashboard", "callback_data": "/users"},
-            {"text": "🔑 VIP Keys", "callback_data": "/keys"},
+            {"text": "👥 User Dashboard (/users)", "callback_data": "/users"},
+            {"text": "🔑 VIP Keys (/keys)", "callback_data": "/keys"},
+        ])
+        keyboard.append([
+            {"text": "⏰ Schedules (/schedules)", "callback_data": "/schedules"},
+            {"text": "❓ Full Help Guide (/help)", "callback_data": "/help"},
         ])
     else:
         keyboard.append([
-            {"text": "❓ Full Help Menu", "callback_data": "/help"},
+            {"text": "❓ Full Help & Command Guide (/help)", "callback_data": "/help"},
         ])
     return {"inline_keyboard": keyboard}
 
@@ -119,6 +140,18 @@ def get_admin_keyboard() -> dict:
                 {"text": "📅 Daily PnL (/summary)", "callback_data": "/summary"},
             ],
             [
+                {"text": "📜 History (/history)", "callback_data": "/history"},
+                {"text": "❌ Close All (/closeall)", "callback_data": "/closeall"},
+            ],
+            [
+                {"text": "⚡ Leverage (/setleverage)", "callback_data": "/setleverage"},
+                {"text": "⚙️ Trade Size (/setsize)", "callback_data": "/setsize"},
+            ],
+            [
+                {"text": "💼 Balance (/setbalance)", "callback_data": "/setbalance"},
+                {"text": "🧹 Reset History (/resethistory)", "callback_data": "/resethistory"},
+            ],
+            [
                 {"text": "⏰ Active Schedules (/schedules)", "callback_data": "/schedules"},
                 {"text": "🤖 Auto-Pilot (/autopilot)", "callback_data": "/autopilot"},
             ],
@@ -131,7 +164,10 @@ def get_admin_keyboard() -> dict:
                 {"text": "📰 Breaking News (/news)", "callback_data": "/news"},
             ],
             [
+                {"text": "🔄 Reset Account (/resetaccount)", "callback_data": "/resetaccount"},
                 {"text": "📱 User Menu (/menu)", "callback_data": "/menu"},
+            ],
+            [
                 {"text": "❓ Help Guide (/help)", "callback_data": "/help"},
             ],
         ]
@@ -519,6 +555,10 @@ def handle_message(message: dict) -> None:
                     "Hunting 24/7 for single-pair trade setups (65% minimum confidence). "
                     "When a setup triggers, you'll receive a direct single-trade alert.",
                     chat_id=chat_id,
+                    reply_markup={"inline_keyboard": [
+                        [{"text": "🔴 Pause Auto-Pilot", "callback_data": "/autopilot off"}],
+                        [{"text": "📱 Main Menu", "callback_data": "/menu"}],
+                    ]},
                 )
                 return
             elif command == "/autopilot_off" or subcmd.lower() == "off":
@@ -526,10 +566,23 @@ def handle_message(message: dict) -> None:
                 send_telegram_message(
                     "🔴 <b>Auto-Pilot Paused.</b>\n\nBackground scanning is suspended. Send <code>/autopilot on</code> to resume.",
                     chat_id=chat_id,
+                    reply_markup={"inline_keyboard": [
+                        [{"text": "🟢 Activate Auto-Pilot", "callback_data": "/autopilot on"}],
+                        [{"text": "📱 Main Menu", "callback_data": "/menu"}],
+                    ]},
                 )
                 return
             else:
-                send_telegram_message(autopilot.get_status_text(), chat_id=chat_id)
+                ap_keyboard = [
+                    [
+                        {"text": "🟢 Turn ON", "callback_data": "/autopilot on"},
+                        {"text": "🔴 Turn OFF", "callback_data": "/autopilot off"},
+                    ],
+                    [
+                        {"text": "📱 Main Menu", "callback_data": "/menu"},
+                    ],
+                ]
+                send_telegram_message(autopilot.get_status_text(), chat_id=chat_id, reply_markup={"inline_keyboard": ap_keyboard})
                 return
 
         # -------------------------------------------------------------
@@ -543,21 +596,63 @@ def handle_message(message: dict) -> None:
         if command in {"/summary", "/daily", "/pnl"}:
             target_date = subcmd if subcmd else None
             summary_text = get_daily_summary_report(target_date)
-            send_telegram_message(summary_text, chat_id=chat_id)
+            send_telegram_message(
+                summary_text,
+                chat_id=chat_id,
+                reply_markup={"inline_keyboard": [[{"text": "📱 Main Menu", "callback_data": "/menu"}]]},
+            )
             return
 
         if command in {"/history", "/trades_history"}:
-            send_telegram_message(get_trade_history_report(), chat_id=chat_id)
+            send_telegram_message(
+                get_trade_history_report(),
+                chat_id=chat_id,
+                reply_markup={"inline_keyboard": [[{"text": "📱 Main Menu", "callback_data": "/menu"}]]},
+            )
             return
 
         if command in {"/resethistory", "/resetpnl", "/clearhistory", "/clearpnl"}:
             ok, msg = reset_trade_history()
-            send_telegram_message(msg, chat_id=chat_id)
+            send_telegram_message(
+                msg,
+                chat_id=chat_id,
+                reply_markup={"inline_keyboard": [
+                    [
+                        {"text": "📊 View Status", "callback_data": "/status"},
+                        {"text": "📱 Main Menu", "callback_data": "/menu"},
+                    ]
+                ]},
+            )
             return
 
         if command in {"/resetaccount", "/resetpaper", "/resetall", "/factoryreset"}:
+            if not subcmd:
+                reset_kb = [
+                    [
+                        {"text": "⚠️ Confirm Reset ($10,000)", "callback_data": "/resetaccount confirm"},
+                        {"text": "⚠️ Reset ($1,000)", "callback_data": "/resetaccount 1000"},
+                    ],
+                    [
+                        {"text": "⚠️ Reset ($25,000)", "callback_data": "/resetaccount 25000"},
+                        {"text": "⚠️ Reset ($50,000)", "callback_data": "/resetaccount 50000"},
+                    ],
+                    [
+                        {"text": "❌ Cancel (Main Menu)", "callback_data": "/menu"},
+                    ],
+                ]
+                send_telegram_message(
+                    "⚠️ <b>Confirm Paper Account Reset?</b>\n\n"
+                    "This action will:\n"
+                    "• Close and clear all active open trades\n"
+                    "• Wipe trade history and PnL statistics\n"
+                    "• Reset virtual balance to starting capital\n\n"
+                    "Tap a button below or specify custom balance: <code>/resetaccount &lt;amount&gt;</code>",
+                    chat_id=chat_id,
+                    reply_markup={"inline_keyboard": reset_kb},
+                )
+                return
             starting_balance = 10000.0
-            if subcmd:
+            if subcmd.lower() != "confirm":
                 clean_val = subcmd.replace("$", "").replace(",", "").strip()
                 try:
                     starting_balance = float(clean_val)
@@ -565,24 +660,53 @@ def handle_message(message: dict) -> None:
                     send_telegram_message("❌ Invalid balance. Usage: <code>/resetaccount [starting_balance]</code> (e.g. <code>/resetaccount 10000</code>)", chat_id=chat_id)
                     return
             ok, msg = reset_paper_account(starting_balance)
-            send_telegram_message(msg, chat_id=chat_id)
+            send_telegram_message(
+                msg,
+                chat_id=chat_id,
+                reply_markup={"inline_keyboard": [
+                    [
+                        {"text": "📊 Live Status", "callback_data": "/status"},
+                        {"text": "📱 Main Menu", "callback_data": "/menu"},
+                    ]
+                ]},
+            )
             return
 
         if command in {"/setbalance", "/paper_balance"}:
             if not subcmd:
                 settings = get_paper_settings()
+                bal_kb = [
+                    [
+                        {"text": "$1,000", "callback_data": "/setbalance 1000"},
+                        {"text": "$5,000", "callback_data": "/setbalance 5000"},
+                        {"text": "$10,000", "callback_data": "/setbalance 10000"},
+                    ],
+                    [
+                        {"text": "$25,000", "callback_data": "/setbalance 25000"},
+                        {"text": "$50,000", "callback_data": "/setbalance 50000"},
+                        {"text": "$100,000", "callback_data": "/setbalance 100000"},
+                    ],
+                    [
+                        {"text": "📱 Main Menu", "callback_data": "/menu"},
+                    ],
+                ]
                 send_telegram_message(
                     f"💼 <b>Current Virtual Balance:</b> <code>${settings['virtual_balance']:,.2f}</code>\n\n"
-                    f"To update, send: <code>/setbalance &lt;amount&gt;</code>\n"
+                    f"Tap a quick-set button below or type: <code>/setbalance &lt;amount&gt;</code>\n"
                     f"Example: <code>/setbalance 10000</code>",
                     chat_id=chat_id,
+                    reply_markup={"inline_keyboard": bal_kb},
                 )
                 return
             clean_val = subcmd.replace("$", "").replace(",", "").strip()
             try:
                 val = float(clean_val)
                 ok, msg = set_virtual_balance(val)
-                send_telegram_message(msg, chat_id=chat_id)
+                send_telegram_message(
+                    msg,
+                    chat_id=chat_id,
+                    reply_markup={"inline_keyboard": [[{"text": "📱 Main Menu", "callback_data": "/menu"}]]},
+                )
             except ValueError:
                 send_telegram_message("❌ Invalid balance amount. Example: <code>/setbalance 10000</code>", chat_id=chat_id)
             return
@@ -590,18 +714,38 @@ def handle_message(message: dict) -> None:
         if command in {"/setsize", "/paper_size", "/lotsize", "/setlot"}:
             if not subcmd:
                 settings = get_paper_settings()
+                size_kb = [
+                    [
+                        {"text": "$10", "callback_data": "/setsize 10"},
+                        {"text": "$25", "callback_data": "/setsize 25"},
+                        {"text": "$50", "callback_data": "/setsize 50"},
+                    ],
+                    [
+                        {"text": "$100", "callback_data": "/setsize 100"},
+                        {"text": "$500", "callback_data": "/setsize 500"},
+                        {"text": "$1,000", "callback_data": "/setsize 1000"},
+                    ],
+                    [
+                        {"text": "📱 Main Menu", "callback_data": "/menu"},
+                    ],
+                ]
                 send_telegram_message(
-                    f"⚙️ <b>Current Trade Size:</b> <code>${settings['trade_size_usd']:,.2f}</code> per entry\n\n"
-                    f"To update, send: <code>/setsize &lt;amount&gt;</code>\n"
+                    f"⚙️ <b>Current Trade Margin:</b> <code>${settings['trade_size_usd']:,.2f}</code> per entry\n\n"
+                    f"Tap a quick-set button below or type: <code>/setsize &lt;amount&gt;</code>\n"
                     f"Example: <code>/setsize 500</code>",
                     chat_id=chat_id,
+                    reply_markup={"inline_keyboard": size_kb},
                 )
                 return
             clean_val = subcmd.replace("$", "").replace(",", "").strip()
             try:
                 val = float(clean_val)
                 ok, msg = set_trade_size(val)
-                send_telegram_message(msg, chat_id=chat_id)
+                send_telegram_message(
+                    msg,
+                    chat_id=chat_id,
+                    reply_markup={"inline_keyboard": [[{"text": "📱 Main Menu", "callback_data": "/menu"}]]},
+                )
             except ValueError:
                 send_telegram_message("❌ Invalid size amount. Example: <code>/setsize 500</code>", chat_id=chat_id)
             return
@@ -611,24 +755,45 @@ def handle_message(message: dict) -> None:
                 settings = get_paper_settings()
                 lev = settings.get("leverage", 1.0)
                 margin = settings.get("trade_size_usd", 1000.0)
+                lev_kb = [
+                    [
+                        {"text": "1x Spot", "callback_data": "/setleverage 1x"},
+                        {"text": "5x", "callback_data": "/setleverage 5x"},
+                        {"text": "10x", "callback_data": "/setleverage 10x"},
+                    ],
+                    [
+                        {"text": "20x", "callback_data": "/setleverage 20x"},
+                        {"text": "25x", "callback_data": "/setleverage 25x"},
+                        {"text": "50x", "callback_data": "/setleverage 50x"},
+                    ],
+                    [
+                        {"text": "75x", "callback_data": "/setleverage 75x"},
+                        {"text": "100x", "callback_data": "/setleverage 100x"},
+                        {"text": "125x Max", "callback_data": "/setleverage 125x"},
+                    ],
+                    [
+                        {"text": "📱 Main Menu", "callback_data": "/menu"},
+                    ],
+                ]
                 send_telegram_message(
                     f"⚙️ <b>Current Paper Trading Leverage:</b> <code>{lev:g}x</code>\n"
                     f"• <b>Margin Per Trade:</b> <code>${margin:,.2f}</code>\n"
                     f"• <b>Total Buying Power:</b> <code>${margin * lev:,.2f}</code>\n\n"
-                    f"To update leverage, send: <code>/setleverage &lt;multiplier&gt;</code>\n"
-                    f"Examples:\n"
-                    f"• <code>/setleverage 10x</code> (10x Leverage)\n"
-                    f"• <code>/setleverage 20x</code> (20x Leverage)\n"
-                    f"• <code>/setleverage 50x</code> (50x Leverage)\n"
-                    f"• <code>/setleverage 1x</code> (1x Spot)",
+                    f"Tap a quick-set button below or type: <code>/setleverage &lt;multiplier&gt;</code>\n"
+                    f"<i>(Range: 1x to 125x)</i>",
                     chat_id=chat_id,
+                    reply_markup={"inline_keyboard": lev_kb},
                 )
                 return
             clean_val = subcmd.lower().replace("x", "").strip()
             try:
                 val = float(clean_val)
                 ok, msg = set_leverage(val)
-                send_telegram_message(msg, chat_id=chat_id)
+                send_telegram_message(
+                    msg,
+                    chat_id=chat_id,
+                    reply_markup={"inline_keyboard": [[{"text": "📱 Main Menu", "callback_data": "/menu"}]]},
+                )
             except ValueError:
                 send_telegram_message("❌ Invalid leverage amount. Example: <code>/setleverage 10x</code>", chat_id=chat_id)
             return
