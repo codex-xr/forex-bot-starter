@@ -281,7 +281,7 @@ def handle_callback_query(callback_query: dict) -> None:
                 entry = report.entry or curr_close
                 sl = report.stop_loss or (entry * 0.98 if action == "BUY" else entry * 1.02)
                 tp1 = report.tp1 or report.take_profit or (entry * 1.03 if action == "BUY" else entry * 0.97)
-                ok, enter_msg, _ = open_paper_trade(symbol, action, entry, sl, tp1)
+                ok, enter_msg, _ = open_paper_trade(symbol, action, entry, sl, tp1, user_id=chat_id)
                 send_telegram_message(enter_msg, chat_id=chat_id)
             except Exception as e:
                 send_telegram_message(f"❌ Failed to enter paper trade for {symbol}: {e}", chat_id=chat_id)
@@ -293,7 +293,8 @@ def handle_callback_query(callback_query: dict) -> None:
         try:
             from bot.paper_engine import _load_paper_store
             store = _load_paper_store()
-            pos = store.positions.get(pos_id)
+            ustate = store.get_user_state(chat_id)
+            pos = ustate.positions.get(pos_id)
             curr_price = pos.entry_price if pos else 0.0
             if pos:
                 try:
@@ -302,7 +303,7 @@ def handle_callback_query(callback_query: dict) -> None:
                         curr_price = float(df.iloc[-1]["close"])
                 except Exception:
                     pass
-            ok, close_msg, _ = close_paper_trade(pos_id, curr_price if curr_price > 0 else 1.0, reason="MANUAL_CLOSE")
+            ok, close_msg, _ = close_paper_trade(pos_id, curr_price if curr_price > 0 else 1.0, reason="MANUAL_CLOSE", user_id=chat_id)
             send_telegram_message(close_msg, chat_id=chat_id)
         except Exception as e:
             send_telegram_message(f"❌ Failed to close position: {e}", chat_id=chat_id)
@@ -586,16 +587,16 @@ def handle_message(message: dict) -> None:
                 return
 
         # -------------------------------------------------------------
-        # Paper Trading & Forward-Testing Execution
+        # Paper Trading & Forward-Testing Execution (Isolated per User)
         # -------------------------------------------------------------
         if command in {"/status", "/trades", "/paper"}:
-            status_text, status_keyboard = get_status_report()
+            status_text, status_keyboard = get_status_report(user_id=chat_id)
             send_telegram_message(status_text, chat_id=chat_id, reply_markup=status_keyboard)
             return
 
         if command in {"/summary", "/daily", "/pnl"}:
             target_date = subcmd if subcmd else None
-            summary_text = get_daily_summary_report(target_date)
+            summary_text = get_daily_summary_report(target_date, user_id=chat_id)
             send_telegram_message(
                 summary_text,
                 chat_id=chat_id,
@@ -605,14 +606,14 @@ def handle_message(message: dict) -> None:
 
         if command in {"/history", "/trades_history"}:
             send_telegram_message(
-                get_trade_history_report(),
+                get_trade_history_report(user_id=chat_id),
                 chat_id=chat_id,
                 reply_markup={"inline_keyboard": [[{"text": "📱 Main Menu", "callback_data": "/menu"}]]},
             )
             return
 
         if command in {"/resethistory", "/resetpnl", "/clearhistory", "/clearpnl"}:
-            ok, msg = reset_trade_history()
+            ok, msg = reset_trade_history(user_id=chat_id)
             send_telegram_message(
                 msg,
                 chat_id=chat_id,
@@ -659,7 +660,7 @@ def handle_message(message: dict) -> None:
                 except ValueError:
                     send_telegram_message("❌ Invalid balance. Usage: <code>/resetaccount [starting_balance]</code> (e.g. <code>/resetaccount 10000</code>)", chat_id=chat_id)
                     return
-            ok, msg = reset_paper_account(starting_balance)
+            ok, msg = reset_paper_account(starting_balance, user_id=chat_id)
             send_telegram_message(
                 msg,
                 chat_id=chat_id,
@@ -674,7 +675,7 @@ def handle_message(message: dict) -> None:
 
         if command in {"/setbalance", "/paper_balance"}:
             if not subcmd:
-                settings = get_paper_settings()
+                settings = get_paper_settings(user_id=chat_id)
                 bal_kb = [
                     [
                         {"text": "$1,000", "callback_data": "/setbalance 1000"},
@@ -701,7 +702,7 @@ def handle_message(message: dict) -> None:
             clean_val = subcmd.replace("$", "").replace(",", "").strip()
             try:
                 val = float(clean_val)
-                ok, msg = set_virtual_balance(val)
+                ok, msg = set_virtual_balance(val, user_id=chat_id)
                 send_telegram_message(
                     msg,
                     chat_id=chat_id,
@@ -713,7 +714,7 @@ def handle_message(message: dict) -> None:
 
         if command in {"/setsize", "/paper_size", "/lotsize", "/setlot"}:
             if not subcmd:
-                settings = get_paper_settings()
+                settings = get_paper_settings(user_id=chat_id)
                 size_kb = [
                     [
                         {"text": "$10", "callback_data": "/setsize 10"},
@@ -740,7 +741,7 @@ def handle_message(message: dict) -> None:
             clean_val = subcmd.replace("$", "").replace(",", "").strip()
             try:
                 val = float(clean_val)
-                ok, msg = set_trade_size(val)
+                ok, msg = set_trade_size(val, user_id=chat_id)
                 send_telegram_message(
                     msg,
                     chat_id=chat_id,
@@ -752,7 +753,7 @@ def handle_message(message: dict) -> None:
 
         if command in {"/setleverage", "/leverage", "/lev", "/setlev"}:
             if not subcmd:
-                settings = get_paper_settings()
+                settings = get_paper_settings(user_id=chat_id)
                 lev = settings.get("leverage", 1.0)
                 margin = settings.get("trade_size_usd", 1000.0)
                 lev_kb = [
@@ -788,7 +789,7 @@ def handle_message(message: dict) -> None:
             clean_val = subcmd.lower().replace("x", "").strip()
             try:
                 val = float(clean_val)
-                ok, msg = set_leverage(val)
+                ok, msg = set_leverage(val, user_id=chat_id)
                 send_telegram_message(
                     msg,
                     chat_id=chat_id,
@@ -817,7 +818,7 @@ def handle_message(message: dict) -> None:
                 entry = report.entry or curr_price
                 sl = report.stop_loss or (entry * 0.98 if action == "BUY" else entry * 1.02)
                 tp1 = report.tp1 or report.take_profit or (entry * 1.03 if action == "BUY" else entry * 0.97)
-                ok, enter_msg, _ = open_paper_trade(target_sym, action, entry, sl, tp1)
+                ok, enter_msg, _ = open_paper_trade(target_sym, action, entry, sl, tp1, user_id=chat_id)
                 send_telegram_message(enter_msg, chat_id=chat_id)
             except Exception as e:
                 send_telegram_message(f"❌ Failed to enter paper trade for {target_sym}: {e}", chat_id=chat_id)
@@ -825,7 +826,7 @@ def handle_message(message: dict) -> None:
 
         if command in {"/close", "/closeall"}:
             if command == "/closeall" or subcmd.lower() in ("all", "closeall"):
-                cnt, close_msg = close_all_open_trades()
+                cnt, close_msg = close_all_open_trades(user_id=chat_id)
                 send_telegram_message(close_msg, chat_id=chat_id)
                 return
             if not subcmd:
@@ -842,7 +843,7 @@ def handle_message(message: dict) -> None:
                 curr_price = float(candles.iloc[-1]["close"])
             except Exception:
                 pass
-            ok, msg, _ = close_paper_trade(target_sym, curr_price if curr_price > 0 else 1.0, reason="MANUAL_CLOSE")
+            ok, msg, _ = close_paper_trade(target_sym, curr_price if curr_price > 0 else 1.0, reason="MANUAL_CLOSE", user_id=chat_id)
             send_telegram_message(msg, chat_id=chat_id)
             return
 

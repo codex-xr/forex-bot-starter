@@ -165,14 +165,11 @@ class handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 print(f"[Cron Broadcast] Error: {exc}")
 
-            # 2. Check open paper trades (trigger TP1/SL closures)
+            # 2. Check open paper trades (trigger TP1/SL closures and deliver to owning users)
             paper_trade_alerts = []
             try:
                 from bot.paper_engine import check_open_trades
-                from bot.telegram import send_telegram_message
                 paper_trade_alerts = check_open_trades()
-                for alert_msg in paper_trade_alerts:
-                    send_telegram_message(alert_msg)
             except Exception as exc:
                 print(f"[Cron PaperTrade] Error: {exc}")
 

@@ -358,3 +358,167 @@ class TestResetFunctions:
         assert len(store.positions) == 0
         assert len(store.history) == 0
         assert store.settings.virtual_balance == 25000.0
+
+
+class TestMultiUserIsolation:
+    def test_multi_user_isolation_history(self):
+        user_a = "111000"
+        user_b = "222000"
+
+        # User A opens and closes a trade
+        ok, _, pos_a = open_paper_trade("BTC_USD", "BUY", 50000.0, 48000.0, 55000.0, user_id=user_a)
+        assert ok is True
+        ok_c, _, hist_a = close_paper_trade(pos_a["id"], 55000.0, reason="TP1_HIT", user_id=user_a)
+        assert ok_c is True
+
+        # User A should see their closed trade
+        report_a = get_trade_history_report(user_id=user_a)
+        assert "BTCUSD" in report_a
+        assert "TP1_HIT" in report_a
+
+        # User B should see a completely blank slate
+        report_b = get_trade_history_report(user_id=user_b)
+        assert "No paper trade history recorded yet" in report_b
+        assert "BTCUSD" not in report_b
+
+    def test_multi_user_isolation_positions(self):
+        user_a = "111000"
+        user_b = "222000"
+
+        # User A opens a position on SOL
+        ok_a, _, pos_a = open_paper_trade("SOL_USD", "BUY", 150.0, 140.0, 165.0, user_id=user_a)
+        assert ok_a is True
+
+        # User B opens the same symbol SOL with their own settings - should NOT be blocked
+        ok_b, _, pos_b = open_paper_trade("SOL_USD", "BUY", 150.0, 140.0, 165.0, user_id=user_b)
+        assert ok_b is True
+        assert pos_a["id"] != pos_b["id"]
+
+        # User A's status report shows only User A's trade
+        status_a, _ = get_status_report(user_id=user_a)
+        assert "SOLUSD" in status_a
+        assert "Active Positions:" in status_a
+        assert "<code>1</code>" in status_a
+
+        # User B closes their trade
+        close_ok, _, _ = close_paper_trade(pos_b["id"], 165.0, reason="TP1_HIT", user_id=user_b)
+        assert close_ok is True
+
+        # User A's position is still open and unaffected
+        status_a_after, _ = get_status_report(user_id=user_a)
+        assert "Active Positions:" in status_a_after
+        assert "<code>1</code>" in status_a_after
+
+        # User B cannot close User A's position
+        fail_close, fail_msg, _ = close_paper_trade(pos_a["id"], 165.0, user_id=user_b)
+        assert fail_close is False
+        assert "No open position found" in fail_msg
+
+    def test_multi_user_isolation_balance_and_settings(self):
+        user_a = "111000"
+        user_b = "222000"
+
+        set_virtual_balance(50000.0, user_id=user_a)
+        set_leverage(25.0, user_id=user_a)
+        set_trade_size(500.0, user_id=user_a)
+
+        set_virtual_balance(500.0, user_id=user_b)
+        set_leverage(5.0, user_id=user_b)
+        set_trade_size(50.0, user_id=user_b)
+
+        settings_a = get_paper_settings(user_id=user_a)
+        settings_b = get_paper_settings(user_id=user_b)
+
+        assert settings_a["virtual_balance"] == 50000.0
+        assert settings_a["leverage"] == 25.0
+        assert settings_a["trade_size_usd"] == 500.0
+
+        assert settings_b["virtual_balance"] == 500.0
+        assert settings_b["leverage"] == 5.0
+        assert settings_b["trade_size_usd"] == 50.0
+
+    def test_multi_user_reset_history_isolation(self):
+        user_a = "111000"
+        user_b = "222000"
+
+        open_paper_trade("BTC_USD", "BUY", 50000.0, 48000.0, 55000.0, user_id=user_a)
+        close_paper_trade("BTC_USD", 55000.0, reason="TP1_HIT", user_id=user_a)
+
+        open_paper_trade("ETH_USD", "BUY", 3000.0, 2800.0, 3300.0, user_id=user_b)
+        close_paper_trade("ETH_USD", 3300.0, reason="TP1_HIT", user_id=user_b)
+
+        # Reset history only for User A
+        reset_trade_history(user_id=user_a)
+
+        report_a = get_trade_history_report(user_id=user_a)
+        report_b = get_trade_history_report(user_id=user_b)
+
+        assert "No paper trade history recorded yet" in report_a
+        assert "ETHUSD" in report_b
+
+    def test_legacy_data_migration(self, monkeypatch):
+        admin_chat = "6686703329"
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", admin_chat)
+
+        legacy_data = {
+            "settings": {
+                "virtual_balance": 12500.0,
+                "trade_size_usd": 1500.0,
+                "leverage": 20.0,
+            },
+            "positions": {
+                "pos_123": {
+                    "id": "pos_123",
+                    "symbol": "BTC_USD",
+                    "display_symbol": "BTC/USD",
+                    "action": "BUY",
+                    "entry_price": 50000.0,
+                    "entry_time": "2025-01-01 12:00:00 UTC",
+                    "entry_ts": 1735732800.0,
+                    "tp1": 55000.0,
+                    "sl": 48000.0,
+                    "size_usd": 1500.0,
+                    "units": 0.6,
+                    "leverage": 20.0,
+                    "status": "OPEN",
+                }
+            },
+            "history": [
+                {
+                    "id": "pos_100",
+                    "symbol": "ETH_USD",
+                    "display_symbol": "ETH/USD",
+                    "action": "BUY",
+                    "entry_price": 3000.0,
+                    "exit_price": 3300.0,
+                    "entry_time": "2025-01-01 10:00:00 UTC",
+                    "exit_time": "2025-01-01 11:00:00 UTC",
+                    "exit_ts": 1735729200.0,
+                    "exit_reason": "TP1_HIT",
+                    "pnl_usd": 200.0,
+                    "pnl_pct": 13.33,
+                    "size_usd": 1500.0,
+                    "duration_seconds": 3600.0,
+                    "date_str": "2025-01-01",
+                    "leverage": 20.0,
+                }
+            ],
+        }
+
+        store = PaperStore.from_dict(legacy_data)
+
+        # Admin should have the legacy data assigned to them
+        assert admin_chat in store.users
+        admin_state = store.users[admin_chat]
+        assert admin_state.settings.virtual_balance == 12500.0
+        assert "pos_123" in admin_state.positions
+        assert len(admin_state.history) == 1
+        assert admin_state.history[0].symbol == "ETH_USD"
+
+        # Any new user accessing gets their own isolated fresh state
+        new_user = "987654321"
+        new_state = store.get_user_state(new_user)
+        assert len(new_state.positions) == 0
+        assert len(new_state.history) == 0
+        assert new_state.settings.virtual_balance == 10000.0
+

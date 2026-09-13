@@ -61,6 +61,7 @@ class PaperPosition:
     units: float
     leverage: float = 1.0
     status: str = "OPEN"
+    user_id: str = "default"
 
 
 @dataclass
@@ -81,71 +82,216 @@ class PaperTradeHistory:
     duration_seconds: float
     date_str: str  # "YYYY-MM-DD" in UTC
     leverage: float = 1.0
+    user_id: str = "default"
+
+
+@dataclass
+class UserPaperState:
+    settings: PaperSettings
+    positions: dict[str, PaperPosition]
+    history: list[PaperTradeHistory]
+
+    def __init__(
+        self,
+        settings: PaperSettings | None = None,
+        positions: dict[str, PaperPosition] | None = None,
+        history: list[PaperTradeHistory] | None = None,
+    ) -> None:
+        self.settings = settings or PaperSettings()
+        self.positions = positions or {}
+        self.history = history or []
 
 
 class PaperStore:
     def __init__(self) -> None:
-        self.settings: PaperSettings = PaperSettings()
-        self.positions: dict[str, PaperPosition] = {}
-        self.history: list[PaperTradeHistory] = []
+        self.users: dict[str, UserPaperState] = {}
+
+    @staticmethod
+    def _norm_user_id(user_id: str | int | None) -> str:
+        if user_id is None:
+            return "default"
+        s = str(user_id).strip().strip("<>\"'").lstrip("@").strip()
+        return s if s else "default"
+
+    def get_user_state(self, user_id: str | int | None = None) -> UserPaperState:
+        uid = self._norm_user_id(user_id)
+        if uid not in self.users:
+            self.users[uid] = UserPaperState()
+        return self.users[uid]
+
+    # Backward compatibility properties for single-user legacy access
+    @property
+    def settings(self) -> PaperSettings:
+        return self.get_user_state("default").settings
+
+    @settings.setter
+    def settings(self, val: PaperSettings) -> None:
+        self.get_user_state("default").settings = val
+
+    @property
+    def positions(self) -> dict[str, PaperPosition]:
+        return self.get_user_state("default").positions
+
+    @positions.setter
+    def positions(self, val: dict[str, PaperPosition]) -> None:
+        self.get_user_state("default").positions = val
+
+    @property
+    def history(self) -> list[PaperTradeHistory]:
+        return self.get_user_state("default").history
+
+    @history.setter
+    def history(self, val: list[PaperTradeHistory]) -> None:
+        self.get_user_state("default").history = val
 
     def to_dict(self) -> dict:
+        users_dict = {}
+        for uid, ustate in self.users.items():
+            users_dict[uid] = {
+                "settings": asdict(ustate.settings),
+                "positions": {pid: asdict(pos) for pid, pos in ustate.positions.items()},
+                "history": [asdict(h) for h in ustate.history],
+            }
+        default_state = self.get_user_state("default")
         return {
-            "settings": asdict(self.settings),
-            "positions": {pid: asdict(pos) for pid, pos in self.positions.items()},
-            "history": [asdict(h) for h in self.history],
+            "users": users_dict,
+            "settings": asdict(default_state.settings),
+            "positions": {pid: asdict(pos) for pid, pos in default_state.positions.items()},
+            "history": [asdict(h) for h in default_state.history],
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "PaperStore":
         store = cls()
-        settings_data = data.get("settings", {})
-        store.settings = PaperSettings(
-            virtual_balance=float(settings_data.get("virtual_balance", 10000.0)),
-            trade_size_usd=float(settings_data.get("trade_size_usd", 1000.0)),
-            leverage=float(settings_data.get("leverage", 1.0)),
-        )
+        admin_id = str(os.getenv("TELEGRAM_CHAT_ID", "6686703329")).strip() or "default"
 
-        positions_data = data.get("positions", {})
-        for pid, pos_dict in positions_data.items():
-            store.positions[pid] = PaperPosition(
-                id=pos_dict.get("id", pid),
-                symbol=pos_dict.get("symbol", ""),
-                display_symbol=pos_dict.get("display_symbol", ""),
-                action=pos_dict.get("action", "BUY"),
-                entry_price=float(pos_dict.get("entry_price", 0.0)),
-                entry_time=pos_dict.get("entry_time", ""),
-                entry_ts=float(pos_dict.get("entry_ts", 0.0)),
-                tp1=float(pos_dict.get("tp1", 0.0)),
-                sl=float(pos_dict.get("sl", 0.0)),
-                size_usd=float(pos_dict.get("size_usd", 1000.0)),
-                units=float(pos_dict.get("units", 0.0)),
-                leverage=float(pos_dict.get("leverage", 1.0)),
-                status=pos_dict.get("status", "OPEN"),
-            )
-
-        history_data = data.get("history", [])
-        for h_dict in history_data:
-            store.history.append(
-                PaperTradeHistory(
-                    id=h_dict.get("id", ""),
-                    symbol=h_dict.get("symbol", ""),
-                    display_symbol=h_dict.get("display_symbol", ""),
-                    action=h_dict.get("action", "BUY"),
-                    entry_price=float(h_dict.get("entry_price", 0.0)),
-                    exit_price=float(h_dict.get("exit_price", 0.0)),
-                    entry_time=h_dict.get("entry_time", ""),
-                    exit_time=h_dict.get("exit_time", ""),
-                    exit_ts=float(h_dict.get("exit_ts", 0.0)),
-                    exit_reason=h_dict.get("exit_reason", "MANUAL_CLOSE"),
-                    pnl_usd=float(h_dict.get("pnl_usd", 0.0)),
-                    pnl_pct=float(h_dict.get("pnl_pct", 0.0)),
-                    size_usd=float(h_dict.get("size_usd", 1000.0)),
-                    duration_seconds=float(h_dict.get("duration_seconds", 0.0)),
-                    date_str=h_dict.get("date_str", ""),
-                    leverage=float(h_dict.get("leverage", 1.0)),
+        # 1. Load users if present in multi-tenant schema
+        users_data = data.get("users", {})
+        if isinstance(users_data, dict) and users_data:
+            for uid, udict in users_data.items():
+                norm_uid = cls._norm_user_id(uid)
+                settings_dict = udict.get("settings", {})
+                settings = PaperSettings(
+                    virtual_balance=float(settings_dict.get("virtual_balance", 10000.0)),
+                    trade_size_usd=float(settings_dict.get("trade_size_usd", 1000.0)),
+                    leverage=float(settings_dict.get("leverage", 1.0)),
                 )
+                positions = {}
+                for pid, pos_dict in udict.get("positions", {}).items():
+                    positions[pid] = PaperPosition(
+                        id=pos_dict.get("id", pid),
+                        symbol=pos_dict.get("symbol", ""),
+                        display_symbol=pos_dict.get("display_symbol", ""),
+                        action=pos_dict.get("action", "BUY"),
+                        entry_price=float(pos_dict.get("entry_price", 0.0)),
+                        entry_time=pos_dict.get("entry_time", ""),
+                        entry_ts=float(pos_dict.get("entry_ts", 0.0)),
+                        tp1=float(pos_dict.get("tp1", 0.0)),
+                        sl=float(pos_dict.get("sl", 0.0)),
+                        size_usd=float(pos_dict.get("size_usd", 1000.0)),
+                        units=float(pos_dict.get("units", 0.0)),
+                        leverage=float(pos_dict.get("leverage", 1.0)),
+                        status=pos_dict.get("status", "OPEN"),
+                        user_id=pos_dict.get("user_id", norm_uid),
+                    )
+                history = []
+                for h_dict in udict.get("history", []):
+                    history.append(
+                        PaperTradeHistory(
+                            id=h_dict.get("id", ""),
+                            symbol=h_dict.get("symbol", ""),
+                            display_symbol=h_dict.get("display_symbol", ""),
+                            action=h_dict.get("action", "BUY"),
+                            entry_price=float(h_dict.get("entry_price", 0.0)),
+                            exit_price=float(h_dict.get("exit_price", 0.0)),
+                            entry_time=h_dict.get("entry_time", ""),
+                            exit_time=h_dict.get("exit_time", ""),
+                            exit_ts=float(h_dict.get("exit_ts", 0.0)),
+                            exit_reason=h_dict.get("exit_reason", "MANUAL_CLOSE"),
+                            pnl_usd=float(h_dict.get("pnl_usd", 0.0)),
+                            pnl_pct=float(h_dict.get("pnl_pct", 0.0)),
+                            size_usd=float(h_dict.get("size_usd", 1000.0)),
+                            duration_seconds=float(h_dict.get("duration_seconds", 0.0)),
+                            date_str=h_dict.get("date_str", ""),
+                            leverage=float(h_dict.get("leverage", 1.0)),
+                            user_id=h_dict.get("user_id", norm_uid),
+                        )
+                    )
+                store.users[norm_uid] = UserPaperState(
+                    settings=settings,
+                    positions=positions,
+                    history=history,
+                )
+
+        # 2. Legacy Migration: Only if 'users' was not present in the stored data
+        has_legacy_data = not users_data and bool(data.get("positions") or data.get("history") or data.get("settings"))
+        if has_legacy_data:
+            legacy_settings_dict = data.get("settings", {})
+            legacy_settings = PaperSettings(
+                virtual_balance=float(legacy_settings_dict.get("virtual_balance", 10000.0)),
+                trade_size_usd=float(legacy_settings_dict.get("trade_size_usd", 1000.0)),
+                leverage=float(legacy_settings_dict.get("leverage", 1.0)),
             )
+            legacy_positions = {}
+            for pid, pos_dict in data.get("positions", {}).items():
+                legacy_positions[pid] = PaperPosition(
+                    id=pos_dict.get("id", pid),
+                    symbol=pos_dict.get("symbol", ""),
+                    display_symbol=pos_dict.get("display_symbol", ""),
+                    action=pos_dict.get("action", "BUY"),
+                    entry_price=float(pos_dict.get("entry_price", 0.0)),
+                    entry_time=pos_dict.get("entry_time", ""),
+                    entry_ts=float(pos_dict.get("entry_ts", 0.0)),
+                    tp1=float(pos_dict.get("tp1", 0.0)),
+                    sl=float(pos_dict.get("sl", 0.0)),
+                    size_usd=float(pos_dict.get("size_usd", 1000.0)),
+                    units=float(pos_dict.get("units", 0.0)),
+                    leverage=float(pos_dict.get("leverage", 1.0)),
+                    status=pos_dict.get("status", "OPEN"),
+                    user_id=pos_dict.get("user_id", admin_id),
+                )
+            legacy_history = []
+            for h_dict in data.get("history", []):
+                legacy_history.append(
+                    PaperTradeHistory(
+                        id=h_dict.get("id", ""),
+                        symbol=h_dict.get("symbol", ""),
+                        display_symbol=h_dict.get("display_symbol", ""),
+                        action=h_dict.get("action", "BUY"),
+                        entry_price=float(h_dict.get("entry_price", 0.0)),
+                        exit_price=float(h_dict.get("exit_price", 0.0)),
+                        entry_time=h_dict.get("entry_time", ""),
+                        exit_time=h_dict.get("exit_time", ""),
+                        exit_ts=float(h_dict.get("exit_ts", 0.0)),
+                        exit_reason=h_dict.get("exit_reason", "MANUAL_CLOSE"),
+                        pnl_usd=float(h_dict.get("pnl_usd", 0.0)),
+                        pnl_pct=float(h_dict.get("pnl_pct", 0.0)),
+                        size_usd=float(h_dict.get("size_usd", 1000.0)),
+                        duration_seconds=float(h_dict.get("duration_seconds", 0.0)),
+                        date_str=h_dict.get("date_str", ""),
+                        leverage=float(h_dict.get("leverage", 1.0)),
+                        user_id=h_dict.get("user_id", admin_id),
+                    )
+                )
+
+            if "default" not in store.users:
+                store.users["default"] = UserPaperState(
+                    settings=legacy_settings,
+                    positions=legacy_positions,
+                    history=legacy_history,
+                )
+            if admin_id and admin_id not in store.users:
+                admin_positions = {pid: PaperPosition(**asdict(pos)) for pid, pos in legacy_positions.items()}
+                for p in admin_positions.values():
+                    p.user_id = admin_id
+                admin_history = [PaperTradeHistory(**asdict(h)) for h in legacy_history]
+                for h in admin_history:
+                    h.user_id = admin_id
+                store.users[admin_id] = UserPaperState(
+                    settings=PaperSettings(**asdict(legacy_settings)),
+                    positions=admin_positions,
+                    history=admin_history,
+                )
 
         return store
 
@@ -233,70 +379,75 @@ def _save_paper_store(store: PaperStore) -> None:
         print(f"[PaperStore] Local save error: {exc}")
 
 
-def set_virtual_balance(new_balance: float) -> tuple[bool, str]:
+def set_virtual_balance(new_balance: float, user_id: str | int | None = None) -> tuple[bool, str]:
     if new_balance <= 0:
         return False, "❌ Virtual balance must be greater than $0."
 
     store = _load_paper_store()
-    store.settings.virtual_balance = round(new_balance, 2)
+    ustate = store.get_user_state(user_id)
+    ustate.settings.virtual_balance = round(new_balance, 2)
     _save_paper_store(store)
-    return True, f"✅ <b>Virtual Balance Updated:</b> <code>${store.settings.virtual_balance:,.2f}</code>"
+    return True, f"✅ <b>Virtual Balance Updated:</b> <code>${ustate.settings.virtual_balance:,.2f}</code>"
 
 
-def set_trade_size(new_size: float) -> tuple[bool, str]:
+def set_trade_size(new_size: float, user_id: str | int | None = None) -> tuple[bool, str]:
     if new_size <= 0:
         return False, "❌ Trade size must be greater than $0."
 
     store = _load_paper_store()
-    store.settings.trade_size_usd = round(new_size, 2)
+    ustate = store.get_user_state(user_id)
+    ustate.settings.trade_size_usd = round(new_size, 2)
     _save_paper_store(store)
-    return True, f"✅ <b>Default Trade Size Updated:</b> <code>${store.settings.trade_size_usd:,.2f}</code> per trade"
+    return True, f"✅ <b>Default Trade Size Updated:</b> <code>${ustate.settings.trade_size_usd:,.2f}</code> per trade"
 
 
-def set_leverage(new_leverage: float) -> tuple[bool, str]:
+def set_leverage(new_leverage: float, user_id: str | int | None = None) -> tuple[bool, str]:
     if new_leverage < 1.0 or new_leverage > 125.0:
         return False, "❌ Leverage must be between 1x and 125x (e.g. <code>/setleverage 10x</code>)."
 
     store = _load_paper_store()
-    store.settings.leverage = round(new_leverage, 1)
+    ustate = store.get_user_state(user_id)
+    ustate.settings.leverage = round(new_leverage, 1)
     _save_paper_store(store)
-    lev_str = f"{store.settings.leverage:g}x"
-    buying_power = store.settings.trade_size_usd * store.settings.leverage
+    lev_str = f"{ustate.settings.leverage:g}x"
+    buying_power = ustate.settings.trade_size_usd * ustate.settings.leverage
     return True, (
         f"⚙️ <b>Leverage Multiplier Updated!</b>\n\n"
         f"• <b>New Leverage:</b> <code>{lev_str}</code>\n"
-        f"• <b>Margin Per Trade:</b> <code>${store.settings.trade_size_usd:,.2f}</code>\n"
+        f"• <b>Margin Per Trade:</b> <code>${ustate.settings.trade_size_usd:,.2f}</code>\n"
         f"• <b>Total Buying Power:</b> <code>${buying_power:,.2f}</code>\n\n"
         f"<i>All newly entered paper trades will now execute at <b>{lev_str}</b> leverage.</i>"
     )
 
 
-def get_paper_settings() -> dict:
+def get_paper_settings(user_id: str | int | None = None) -> dict:
     store = _load_paper_store()
-    return asdict(store.settings)
+    ustate = store.get_user_state(user_id)
+    return asdict(ustate.settings)
 
 
-def reset_trade_history() -> tuple[bool, str]:
+def reset_trade_history(user_id: str | int | None = None) -> tuple[bool, str]:
     """
-    Clears all closed trade history and resets all-time/daily PnL statistics.
+    Clears all closed trade history and resets all-time/daily PnL statistics for the user.
     Leaves active open positions and current virtual balance unchanged.
     """
     store = _load_paper_store()
-    closed_count = len(store.history)
-    store.history = []
+    ustate = store.get_user_state(user_id)
+    closed_count = len(ustate.history)
+    ustate.history = []
     _save_paper_store(store)
     return True, (
         f"🧹 <b>Trade History &amp; PnL Reset!</b>\n\n"
         f"• Cleared <b>{closed_count}</b> closed trade record(s).\n"
         f"• Daily and All-Time PnL metrics have been reset to <b>$0.00</b>.\n"
-        f"• <b>Current Balance:</b> <code>${store.settings.virtual_balance:,.2f}</code>\n"
-        f"• <b>Active Positions:</b> <code>{len(store.positions)}</code> running."
+        f"• <b>Current Balance:</b> <code>${ustate.settings.virtual_balance:,.2f}</code>\n"
+        f"• <b>Active Positions:</b> <code>{len(ustate.positions)}</code> running."
     )
 
 
-def reset_paper_account(starting_balance: float = 10000.0) -> tuple[bool, str]:
+def reset_paper_account(starting_balance: float = 10000.0, user_id: str | int | None = None) -> tuple[bool, str]:
     """
-    Performs a complete factory reset of the paper trading account:
+    Performs a complete factory reset of the paper trading account for the user:
     - Closes/clears all open positions
     - Clears all trade history & PnL
     - Resets virtual balance to starting_balance (default $10,000)
@@ -305,17 +456,24 @@ def reset_paper_account(starting_balance: float = 10000.0) -> tuple[bool, str]:
         return False, "❌ Starting balance must be greater than $0."
 
     store = _load_paper_store()
-    pos_count = len(store.positions)
-    hist_count = len(store.history)
+    ustate = store.get_user_state(user_id)
+    pos_count = len(ustate.positions)
+    hist_count = len(ustate.history)
 
-    store.positions = {}
-    store.history = []
-    store.settings.virtual_balance = round(starting_balance, 2)
+    ustate.positions = {}
+    ustate.history = []
+    ustate.settings = PaperSettings(
+        virtual_balance=round(starting_balance, 2),
+        trade_size_usd=1000.0,
+        leverage=1.0,
+    )
     _save_paper_store(store)
 
     return True, (
         f"🔄 <b>Paper Trading Account Fully Reset!</b>\n\n"
-        f"• <b>Virtual Balance:</b> <code>${store.settings.virtual_balance:,.2f}</code>\n"
+        f"• <b>Virtual Balance:</b> <code>${ustate.settings.virtual_balance:,.2f}</code>\n"
+        f"• <b>Default Trade Margin:</b> <code>$1,000.00</code>\n"
+        f"• <b>Leverage:</b> <code>1x</code> (Spot/Unleveraged)\n"
         f"• <b>Active Positions:</b> Cleared (<b>{pos_count}</b> removed)\n"
         f"• <b>Trade History:</b> Wiped (<b>{hist_count}</b> records removed)\n"
         f"• <b>PnL:</b> Reset to <b>$0.00</b>\n\n"
@@ -331,14 +489,17 @@ def open_paper_trade(
     tp1: float,
     size_usd: float | None = None,
     leverage: float | None = None,
+    user_id: str | int | None = None,
 ) -> tuple[bool, str, dict | None]:
     """
-    Opens a simulated paper trade with exact TP1 and SL limits and leverage.
+    Opens a simulated paper trade with exact TP1 and SL limits and leverage for the given user.
     """
     symbol = normalize_symbol(symbol)
     store = _load_paper_store()
+    uid = store._norm_user_id(user_id)
+    ustate = store.get_user_state(uid)
 
-    clean_action = action.upper()
+    clean_action = action.upper().strip()
     if clean_action in ("BUY", "LONG"):
         clean_action = "BUY"
     elif clean_action in ("SELL", "SHORT"):
@@ -349,8 +510,8 @@ def open_paper_trade(
     if entry_price <= 0 or sl <= 0 or tp1 <= 0:
         return False, "❌ Invalid price levels (Entry, SL, and TP1 must be > 0).", None
 
-    # Check for existing open trade on the same symbol
-    for pos in store.positions.values():
+    # Check for existing open trade on the same symbol for THIS user
+    for pos in ustate.positions.values():
         if pos.symbol == symbol:
             return (
                 False,
@@ -359,8 +520,8 @@ def open_paper_trade(
                 None,
             )
 
-    trade_size = size_usd or store.settings.trade_size_usd
-    trade_lev = leverage or store.settings.leverage
+    trade_size = size_usd or ustate.settings.trade_size_usd
+    trade_lev = leverage or ustate.settings.leverage
     notional_size = trade_size * trade_lev
     units = notional_size / entry_price
     display_sym = DISPLAY_NAMES.get(symbol, symbol.replace("_", "/"))
@@ -368,7 +529,7 @@ def open_paper_trade(
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     now_ts = now_utc.timestamp()
     time_str = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
-    pos_id = f"pos_{int(now_ts)}_{symbol.lower()}"
+    pos_id = f"pos_{uid}_{int(now_ts * 1000)}_{symbol.lower()}"
 
     position = PaperPosition(
         id=pos_id,
@@ -384,9 +545,10 @@ def open_paper_trade(
         units=units,
         leverage=trade_lev,
         status="OPEN",
+        user_id=uid,
     )
 
-    store.positions[pos_id] = position
+    ustate.positions[pos_id] = position
     _save_paper_store(store)
 
     dir_emoji = "🟢 LONG" if clean_action == "BUY" else "🔴 SHORT"
@@ -410,28 +572,59 @@ def close_paper_trade(
     pos_id: str,
     exit_price: float,
     reason: str = "MANUAL_CLOSE",
+    user_id: str | int | None = None,
 ) -> tuple[bool, str, dict | None]:
     """
     Closes an open paper position, calculates realized PnL with leverage, updates virtual balance,
-    and archives the trade into history.
+    and archives the trade into history for the owning user.
     """
     store = _load_paper_store()
 
-    position = store.positions.get(pos_id)
-    if not position:
-        # Search by symbol match if pos_id is symbol name
-        norm_sym = normalize_symbol(pos_id)
-        for pid, p in store.positions.items():
-            if (
-                p.symbol.lower() == pos_id.lower()
-                or p.symbol.lower() == norm_sym.lower()
-                or p.display_symbol.lower().replace("/", "_") == pos_id.lower().replace("/", "_")
-            ):
+    target_ustate = None
+    target_uid = None
+    position = None
+
+    if user_id is not None:
+        target_uid = store._norm_user_id(user_id)
+        target_ustate = store.get_user_state(target_uid)
+        position = target_ustate.positions.get(pos_id)
+        if not position:
+            norm_sym = normalize_symbol(pos_id)
+            for pid, p in target_ustate.positions.items():
+                if (
+                    p.symbol.lower() == pos_id.lower()
+                    or p.symbol.lower() == norm_sym.lower()
+                    or p.display_symbol.lower().replace("/", "_") == pos_id.lower().replace("/", "_")
+                ):
+                    position = p
+                    pos_id = pid
+                    break
+    else:
+        # Search across all users
+        for uid, ustate in store.users.items():
+            p = ustate.positions.get(pos_id)
+            if p:
                 position = p
-                pos_id = pid
+                pos_id = p.id
+                target_ustate = ustate
+                target_uid = uid
+                break
+            norm_sym = normalize_symbol(pos_id)
+            for pid, p2 in ustate.positions.items():
+                if (
+                    p2.symbol.lower() == pos_id.lower()
+                    or p2.symbol.lower() == norm_sym.lower()
+                    or p2.display_symbol.lower().replace("/", "_") == pos_id.lower().replace("/", "_")
+                ):
+                    position = p2
+                    pos_id = pid
+                    target_ustate = ustate
+                    target_uid = uid
+                    break
+            if position:
                 break
 
-    if not position:
+    if not position or not target_ustate:
         return False, f"❌ No open position found for ID or symbol '{pos_id}'.", None
 
     if exit_price <= 0:
@@ -455,10 +648,10 @@ def close_paper_trade(
     pnl_usd = round(pnl_usd, 2)
     pnl_pct = round(pnl_pct, 2)
 
-    # Update balance
-    store.settings.virtual_balance = round(store.settings.virtual_balance + pnl_usd, 2)
+    # Update balance for owning user
+    target_ustate.settings.virtual_balance = round(target_ustate.settings.virtual_balance + pnl_usd, 2)
 
-    # Archive to history
+    # Archive to user history
     trade_hist = PaperTradeHistory(
         id=position.id,
         symbol=position.symbol,
@@ -476,10 +669,11 @@ def close_paper_trade(
         duration_seconds=duration,
         date_str=date_str,
         leverage=position.leverage,
+        user_id=target_uid or "default",
     )
 
-    del store.positions[pos_id]
-    store.history.append(trade_hist)
+    del target_ustate.positions[pos_id]
+    target_ustate.history.append(trade_hist)
     _save_paper_store(store)
 
     pnl_emoji = "🟢" if pnl_usd >= 0 else "🔴"
@@ -499,7 +693,7 @@ def close_paper_trade(
         f"• <b>Entry Price:</b> <code>{_fmt_price(position.entry_price)}</code>\n"
         f"• <b>Exit Price:</b> <code>{_fmt_price(exit_price)}</code>\n"
         f"• <b>Realized ROE / PnL:</b> <b>{pnl_sign}${pnl_usd:,.2f}</b> ({pnl_sign}{pnl_pct:.2f}%)\n"
-        f"• <b>New Balance:</b> <code>${store.settings.virtual_balance:,.2f}</code>\n"
+        f"• <b>New Balance:</b> <code>${target_ustate.settings.virtual_balance:,.2f}</code>\n"
         f"• <b>Duration:</b> <code>{int(duration // 60)}m {int(duration % 60)}s</code>"
     )
 
@@ -509,22 +703,31 @@ def close_paper_trade(
 import concurrent.futures
 
 
-def check_open_trades() -> list[str]:
+def check_open_trades(user_id: str | int | None = None) -> list[str]:
     """
-    Checks real-time market prices against all active open trades.
-    If a trade reached TP1 or SL, immediately closes the trade (zero Break-Even adjustment)
-    and generates an alert notification.
+    Checks real-time market prices against active open trades.
+    If a trade reached TP1 or SL, immediately closes the trade (zero Break-Even adjustment),
+    updates the owner's account, and delivers an alert directly to the owning user.
     """
     # Skip live network calls in automated test suite unless mocked
     if os.getenv("PYTEST_CURRENT_TEST") and not hasattr(fetch_live_candles, "mock_calls"):
         return []
 
     store = _load_paper_store()
-    if not store.positions:
+    positions_to_check: list[PaperPosition] = []
+
+    if user_id is not None:
+        uid = store._norm_user_id(user_id)
+        ustate = store.get_user_state(uid)
+        positions_to_check = list(ustate.positions.values())
+    else:
+        for ustate in store.users.values():
+            positions_to_check.extend(list(ustate.positions.values()))
+
+    if not positions_to_check:
         return []
 
     alerts: list[str] = []
-    positions_to_check = list(store.positions.values())
 
     # Fetch live candles concurrently in parallel
     sym_dfs = {}
@@ -550,55 +753,59 @@ def check_open_trades() -> list[str]:
         high_price = float(last_row.get("high", curr_close))
         low_price = float(last_row.get("low", curr_close))
 
+        target_reason = None
+        target_exit = None
+
         # Long evaluation
         if pos.action == "BUY":
             # Check TP1 first
             if high_price >= pos.tp1 or curr_close >= pos.tp1:
-                ok, alert_msg, _ = close_paper_trade(pos.id, pos.tp1, reason="TP1_HIT")
-                if ok:
-                    alerts.append(alert_msg)
-                continue
-
-            # Check SL
-            if low_price <= pos.sl or curr_close <= pos.sl:
-                ok, alert_msg, _ = close_paper_trade(pos.id, pos.sl, reason="SL_HIT")
-                if ok:
-                    alerts.append(alert_msg)
-                continue
+                target_reason = "TP1_HIT"
+                target_exit = pos.tp1
+            elif low_price <= pos.sl or curr_close <= pos.sl:
+                target_reason = "SL_HIT"
+                target_exit = pos.sl
 
         # Short evaluation
         elif pos.action == "SELL":
             # Check TP1 first (for shorts, TP1 is lower)
             if low_price <= pos.tp1 or curr_close <= pos.tp1:
-                ok, alert_msg, _ = close_paper_trade(pos.id, pos.tp1, reason="TP1_HIT")
-                if ok:
-                    alerts.append(alert_msg)
-                continue
+                target_reason = "TP1_HIT"
+                target_exit = pos.tp1
+            elif high_price >= pos.sl or curr_close >= pos.sl:
+                target_reason = "SL_HIT"
+                target_exit = pos.sl
 
-            # Check SL (for shorts, SL is higher)
-            if high_price >= pos.sl or curr_close >= pos.sl:
-                ok, alert_msg, _ = close_paper_trade(pos.id, pos.sl, reason="SL_HIT")
-                if ok:
-                    alerts.append(alert_msg)
-                continue
+        if target_reason and target_exit:
+            ok, alert_msg, _ = close_paper_trade(pos.id, target_exit, reason=target_reason, user_id=pos.user_id)
+            if ok and alert_msg:
+                alerts.append(alert_msg)
+                # Dispatch alert to owning user
+                if not os.getenv("PYTEST_CURRENT_TEST"):
+                    try:
+                        from bot.telegram import send_telegram_message
+                        target_chat = pos.user_id if (pos.user_id and pos.user_id != "default") else None
+                        send_telegram_message(alert_msg, chat_id=target_chat)
+                    except Exception as exc:
+                        print(f"[PaperCheck] Error notifying {pos.user_id}: {exc}")
 
     return alerts
 
 
-def get_status_report() -> tuple[str, dict | None]:
+def get_status_report(user_id: str | int | None = None) -> tuple[str, dict | None]:
     """
     Builds the live /status report showing Virtual Balance, open positions,
-    live unrealized PnL, progress towards TP1/SL, and quick manual close buttons.
+    live unrealized PnL, progress towards TP1/SL, and quick manual close buttons for the specified user.
     """
-    # First trigger check on open trades
-    check_open_trades()
+    check_open_trades(user_id=user_id)
     store = _load_paper_store()
+    ustate = store.get_user_state(user_id)
 
-    balance = store.settings.virtual_balance
-    trade_size = store.settings.trade_size_usd
-    leverage = store.settings.leverage
+    balance = ustate.settings.virtual_balance
+    trade_size = ustate.settings.trade_size_usd
+    leverage = ustate.settings.leverage
     buying_power = trade_size * leverage
-    open_count = len(store.positions)
+    open_count = len(ustate.positions)
 
     lines = [
         "📊 <b>PAPER TRADING LIVE DASHBOARD</b>",
@@ -617,7 +824,7 @@ def get_status_report() -> tuple[str, dict | None]:
     else:
         total_unrealized_usd = 0.0
 
-        for idx, (pid, pos) in enumerate(store.positions.items(), 1):
+        for idx, (pid, pos) in enumerate(ustate.positions.items(), 1):
             curr_price = pos.entry_price
             try:
                 # In tests, avoid unmocked calls
@@ -657,8 +864,8 @@ def get_status_report() -> tuple[str, dict | None]:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"📈 <b>Total Floating PnL:</b> {tot_icon} <b>{tot_sign}${total_unrealized_usd:,.2f}</b>")
 
-    # Overall historical stats
-    history = store.history
+    # Overall historical stats for this user
+    history = ustate.history
     if history:
         total_closed = len(history)
         wins = [h for h in history if h.pnl_usd > 0]
@@ -682,23 +889,23 @@ def get_status_report() -> tuple[str, dict | None]:
     return "\n".join(lines), keyboard
 
 
-def get_daily_summary_report(target_date: str | None = None) -> str:
+def get_daily_summary_report(target_date: str | None = None, user_id: str | int | None = None) -> str:
     """
-    Builds the end-of-day summary report aggregating closed trades for the day:
+    Builds the end-of-day summary report aggregating closed trades for the day for the specified user:
     - Full Day's Realized PnL ($ and %)
     - Win Rate & Trade Count
     - Best Performing Pairs (Top Winners)
     - Worst Performing Pairs (Top Losers)
     - Open positions still running
     """
-    # First trigger check on open trades
-    check_open_trades()
+    check_open_trades(user_id=user_id)
     store = _load_paper_store()
+    ustate = store.get_user_state(user_id)
 
     today_str = target_date or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 
-    # Filter trades closed today
-    day_trades = [h for h in store.history if h.date_str == today_str]
+    # Filter trades closed today for this user
+    day_trades = [h for h in ustate.history if h.date_str == today_str]
 
     lines = [
         f"📅 <b>END-OF-DAY PERFORMANCE SUMMARY</b>",
@@ -709,8 +916,8 @@ def get_daily_summary_report(target_date: str | None = None) -> str:
     if not day_trades:
         lines.append("ℹ️ <i>No trades were closed on this day yet.</i>")
         lines.append("")
-        lines.append(f"💼 <b>Current Virtual Balance:</b> <code>${store.settings.virtual_balance:,.2f}</code>")
-        lines.append(f"⚡ <b>Active Positions Running:</b> <code>{len(store.positions)}</code>")
+        lines.append(f"💼 <b>Current Virtual Balance:</b> <code>${ustate.settings.virtual_balance:,.2f}</code>")
+        lines.append(f"⚡ <b>Active Positions Running:</b> <code>{len(ustate.positions)}</code>")
         return "\n".join(lines)
 
     total_closed = len(day_trades)
@@ -733,7 +940,7 @@ def get_daily_summary_report(target_date: str | None = None) -> str:
     worst_pairs = [p for p in sorted_pairs if p[1] <= 0]
 
     lines.append(f"💰 <b>Daily Realized PnL:</b> {pnl_icon} <b>{pnl_sign}${day_pnl_usd:,.2f}</b>")
-    lines.append(f"💼 <b>Current Balance:</b> <code>${store.settings.virtual_balance:,.2f}</code>")
+    lines.append(f"💼 <b>Current Balance:</b> <code>${ustate.settings.virtual_balance:,.2f}</code>")
     lines.append(f"🎯 <b>Win Rate:</b> <code>{win_rate:.1f}%</code> (<b>{len(wins)}</b> Wins / <b>{len(losses)}</b> Losses)")
     lines.append(f"📊 <b>Total Trades Completed:</b> <code>{total_closed}</code>")
     lines.append("")
@@ -758,16 +965,17 @@ def get_daily_summary_report(target_date: str | None = None) -> str:
 
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"⚡ <b>Positions Still Running:</b> <code>{len(store.positions)}</code>")
+    lines.append(f"⚡ <b>Positions Still Running:</b> <code>{len(ustate.positions)}</code>")
     lines.append("<i>Send <code>/status</code> to inspect active positions.</i>")
 
     return "\n".join(lines)
 
 
-def get_trade_history_report(limit: int = 10) -> str:
-    """Returns a list of the last N closed trades."""
+def get_trade_history_report(limit: int = 10, user_id: str | int | None = None) -> str:
+    """Returns a list of the last N closed trades for the specified user."""
     store = _load_paper_store()
-    history = store.history[-limit:]
+    ustate = store.get_user_state(user_id)
+    history = ustate.history[-limit:]
 
     if not history:
         return "ℹ️ <i>No paper trade history recorded yet.</i>"
@@ -791,27 +999,41 @@ def get_trade_history_report(limit: int = 10) -> str:
     return "\n".join(lines).strip()
 
 
-def close_all_open_trades() -> tuple[int, str]:
-    """Closes all active open positions at current market prices."""
+def close_all_open_trades(user_id: str | int | None = None) -> tuple[int, str]:
+    """Closes active open positions for the given user (or all users if user_id is None)."""
     store = _load_paper_store()
-    if not store.positions:
+    positions_to_close: list[tuple[str, PaperPosition, str]] = []
+
+    if user_id is not None:
+        uid = store._norm_user_id(user_id)
+        ustate = store.get_user_state(uid)
+        for pid, pos in list(ustate.positions.items()):
+            positions_to_close.append((pid, pos, uid))
+    else:
+        for uid, ustate in store.users.items():
+            for pid, pos in list(ustate.positions.items()):
+                positions_to_close.append((pid, pos, uid))
+
+    if not positions_to_close:
         return 0, "ℹ️ No open positions to close."
 
     count = 0
     total_pnl = 0.0
-    for pid, pos in list(store.positions.items()):
+    for pid, pos, uid in positions_to_close:
         curr_price = pos.entry_price
-        try:
-            df = fetch_live_candles(pos.symbol)
-            if not df.empty:
-                curr_price = float(df.iloc[-1]["close"])
-        except Exception:
-            pass
+        if not os.getenv("PYTEST_CURRENT_TEST") or hasattr(fetch_live_candles, "mock_calls"):
+            try:
+                df = fetch_live_candles(pos.symbol)
+                if not df.empty:
+                    curr_price = float(df.iloc[-1]["close"])
+            except Exception:
+                pass
 
-        ok, _, report_data = close_paper_trade(pid, curr_price, reason="MANUAL_CLOSE")
+        ok, _, report_data = close_paper_trade(pid, curr_price, reason="MANUAL_CLOSE", user_id=uid)
         if ok and report_data:
             count += 1
             total_pnl += report_data.get("pnl_usd", 0.0)
 
     pnl_sign = "+" if total_pnl >= 0 else ""
     return count, f"✅ <b>Closed {count} active positions.</b> Total Realized PnL: <b>{pnl_sign}${total_pnl:,.2f}</b>"
+
