@@ -604,4 +604,30 @@ class TestPendingLimitOrders:
         bal_after = get_paper_settings(user_id=user)["virtual_balance"]
         assert bal_before == bal_after
 
+    def test_callback_paper_enter_executes_without_error(self):
+        from bot.telegram_commands import handle_callback_query
+        cb_query = {
+            "id": "cb_1",
+            "from": {"id": 999111},
+            "message": {"chat": {"id": 999111}},
+            "data": "paper_enter:AVAX_USD:BUY",
+        }
+        mock_df = pd.DataFrame([{
+            "open": 25.0,
+            "high": 26.0,
+            "low": 24.0,
+            "close": 25.5,
+        }] * 100)
+
+        with patch("bot.telegram_commands.fetch_live_candles", return_value=mock_df), \
+             patch("bot.telegram_commands.send_telegram_message") as mock_send, \
+             patch("bot.telegram_commands.telegram_request"):
+            handle_callback_query(cb_query)
+
+        assert mock_send.called
+        call_msg = mock_send.call_args[0][0]
+        assert "❌ Failed" not in call_msg
+        assert "AVAX" in call_msg
+        assert "Paper Trade Entered" in call_msg
+
 
