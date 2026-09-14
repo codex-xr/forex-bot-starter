@@ -1,9 +1,12 @@
 from dataclasses import dataclass
 import html
+import os
 import numpy as np
 import pandas as pd
 
 from bot.symbols import DISPLAY_NAMES
+
+USE_LIMIT_ORDERS = os.getenv("USE_LIMIT_ORDERS", "true").lower() in ("true", "1", "yes")
 
 
 def _fmt_price(val: float | None) -> str:
@@ -35,6 +38,8 @@ class SignalReport:
     tp3: float | None = None
     catalyst: str | None = None
     smart_money: str | None = None
+    order_type: str = "LIMIT"
+    market_price: float | None = None
 
     def to_message(self) -> str:
         safe_reason = html.escape(self.reason)
@@ -59,21 +64,34 @@ class SignalReport:
             safe_cat = html.escape(self.catalyst)
             catalyst_line = f"📰 <b>News Catalyst:</b> <i>{safe_cat}</i>\n"
 
-        action_guide = (
-            f"⚡ <b>Action:</b> Instant Market <b>{self.action}</b> (or <b>{self.action} STOP</b> at {_fmt_price(self.entry)})\n"
-            if self.entry is not None else ""
-        )
+        if self.order_type == "LIMIT" and self.entry is not None:
+            order_line = (
+                f"⚡ <b>ORDER TYPE:</b> <b>{self.action} LIMIT</b>\n"
+                f"📍 <b>LIMIT ENTRY:</b> {_fmt_price(self.entry)}\n"
+            )
+            market_line = (
+                f"📊 <b>Current Price:</b> {_fmt_price(self.market_price or self.entry)} <i>(Waiting for retest)</i>\n"
+                f"⏳ <b>Rule:</b> Cancel if TP1 reached before limit entry\n"
+            )
+        else:
+            order_line = (
+                f"⚡ <b>Action:</b> Instant Market <b>{self.action}</b> (or <b>{self.action} STOP</b> at {_fmt_price(self.entry)})\n"
+                f"Entry: {_fmt_price(self.entry)}\n"
+                if self.entry is not None else ""
+            )
+            market_line = ""
 
         return (
+            f"🚨 <b>VIP SIGNAL: {self.symbol}</b> 🚨\n"
             f"<b>{self.symbol}</b>: <b>{self.action} SETUP</b>\n"
             f"Trend: {safe_trend}\n"
             f"Confidence: <code>{self.confidence}%</code>\n"
-            f"{action_guide}"
-            f"Entry: {_fmt_price(self.entry)}\n"
+            f"{order_line}"
             f"Stop Loss: {_fmt_price(self.stop_loss)}\n"
             f"TP 1 (1:1.0): {_fmt_price(tp1_val)} <i>(Pure 1:1 Target)</i>\n"
             f"TP 2 (1:2.0): {_fmt_price(tp2_val)} <i>(Runner Target)</i>\n"
             f"TP 3 (1:3.5): {_fmt_price(tp3_val)} <i>(Max Extension)</i>\n"
+            f"{market_line}"
             f"{catalyst_line}"
             f"{smart_money_block}"
             f"Reason: {safe_reason}"
@@ -587,10 +605,25 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
             sl = close - atr_val * sl_mult
         # 25x leverage risk clamp
         sl = max(sl, close - max_risk_dist)
-        risk = max(close - sl, atr_val * 0.8)
-        tp1 = close + risk * 1.0  # Pure 1:1 TP1
-        tp2 = close + risk * (tp_mult / sl_mult)
-        tp3 = close + risk * 4.0
+
+        if USE_LIMIT_ORDERS:
+            pullback = max(0.20 * atr_val, close * 0.0025)
+            limit_entry = close - pullback
+            if limit_entry <= sl:
+                limit_entry = close - (close - sl) * 0.3
+            risk = max(limit_entry - sl, atr_val * 0.8)
+            tp1 = limit_entry + risk * 1.0  # Pure 1:1 TP1
+            tp2 = limit_entry + risk * (tp_mult / sl_mult)
+            tp3 = limit_entry + risk * 4.0
+            entry = limit_entry
+            order_type = "LIMIT"
+        else:
+            risk = max(close - sl, atr_val * 0.8)
+            tp1 = close + risk * 1.0  # Pure 1:1 TP1
+            tp2 = close + risk * (tp_mult / sl_mult)
+            tp3 = close + risk * 4.0
+            entry = close
+            order_type = "MARKET"
         tp = tp1
     elif action == "SELL":
         if data is not None and len(data) >= 15:
@@ -600,20 +633,37 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
             sl = close + atr_val * sl_mult
         # 25x leverage risk clamp
         sl = min(sl, close + max_risk_dist)
-        risk = max(sl - close, atr_val * 0.8)
-        tp1 = close - risk * 1.0  # Pure 1:1 TP1
-        tp2 = close - risk * (tp_mult / sl_mult)
-        tp3 = close - risk * 4.0
+
+        if USE_LIMIT_ORDERS:
+            pullback = max(0.20 * atr_val, close * 0.0025)
+            limit_entry = close + pullback
+            if limit_entry >= sl:
+                limit_entry = close + (sl - close) * 0.3
+            risk = max(sl - limit_entry, atr_val * 0.8)
+            tp1 = limit_entry - risk * 1.0  # Pure 1:1 TP1
+            tp2 = limit_entry - risk * (tp_mult / sl_mult)
+            tp3 = limit_entry - risk * 4.0
+            entry = limit_entry
+            order_type = "LIMIT"
+        else:
+            risk = max(sl - close, atr_val * 0.8)
+            tp1 = close - risk * 1.0  # Pure 1:1 TP1
+            tp2 = close - risk * (tp_mult / sl_mult)
+            tp3 = close - risk * 4.0
+            entry = close
+            order_type = "MARKET"
         tp = tp1
     else:
         sl = tp = tp1 = tp2 = tp3 = None
+        entry = None
+        order_type = "LIMIT" if USE_LIMIT_ORDERS else "MARKET"
 
     return SignalReport(
         symbol=DISPLAY_NAMES.get(symbol, symbol),
         action=action,
         confidence=confidence,
         trend=trend,
-        entry=close if action != "WAIT" else None,
+        entry=entry if action != "WAIT" else None,
         stop_loss=sl,
         take_profit=tp,
         reason=reason,
@@ -621,6 +671,8 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
         tp2=tp2,
         tp3=tp3,
         catalyst=catalyst,
+        order_type=order_type,
+        market_price=close if action != "WAIT" else None,
     )
 
 
@@ -974,11 +1026,14 @@ def _forex_structural_sl_tp(
     close: float,
     atr_val: float,
     data: pd.DataFrame,
+    entry_price: float | None = None,
 ) -> tuple[float, float, float, float]:
     """
     Computes institutional structural SL (behind swing low/high + buffer)
-    and multi-tier Take Profit targets (TP1 1:1.5, TP2 1:2.5, TP3 1:3.5).
+    and multi-tier Take Profit targets (TP1 1:1.0, TP2 1:2.0, TP3 1:3.5).
     Enforces maximum 2.2% leverage distance cap for 25x survival.
+    If entry_price is provided (e.g. for Limit Orders), risk and TP targets
+    are anchored to entry_price rather than close.
     """
     if symbol in ("XAU_USD", "US30"):
         min_buffer = atr_val * 2.0 if atr_val > 0 else 3.5
@@ -988,6 +1043,7 @@ def _forex_structural_sl_tp(
         min_buffer = max(atr_val * 1.8, 0.0018)
 
     max_risk_dist = close * 0.022  # Max 2.2% price risk for 25x leverage
+    ref_entry = entry_price if entry_price is not None else close
 
     if action == "BUY":
         if len(data) >= 15:
@@ -997,10 +1053,10 @@ def _forex_structural_sl_tp(
             sl = close - min_buffer
         # 25x leverage risk clamp
         sl = max(sl, close - max_risk_dist)
-        risk = max(close - sl, min_buffer)
-        tp1 = close + risk * 1.0  # Pure 1:1 TP1
-        tp2 = close + risk * 2.0
-        tp3 = close + risk * 3.5
+        risk = max(ref_entry - sl, min_buffer)
+        tp1 = ref_entry + risk * 1.0  # Pure 1:1 TP1
+        tp2 = ref_entry + risk * 2.0
+        tp3 = ref_entry + risk * 3.5
     elif action == "SELL":
         if len(data) >= 15:
             swing_high = float(data.iloc[-25:-1]["high"].max())
@@ -1009,14 +1065,73 @@ def _forex_structural_sl_tp(
             sl = close + min_buffer
         # 25x leverage risk clamp
         sl = min(sl, close + max_risk_dist)
-        risk = max(sl - close, min_buffer)
-        tp1 = close - risk * 1.0  # Pure 1:1 TP1
-        tp2 = close - risk * 2.0
-        tp3 = close - risk * 3.5
+        risk = max(sl - ref_entry, min_buffer)
+        tp1 = ref_entry - risk * 1.0  # Pure 1:1 TP1
+        tp2 = ref_entry - risk * 2.0
+        tp3 = ref_entry - risk * 3.5
     else:
         sl = tp1 = tp2 = tp3 = 0.0
 
     return sl, tp1, tp2, tp3
+
+
+def _build_forex_report(
+    symbol: str,
+    action: str,
+    confidence: int,
+    trend: str,
+    close: float,
+    atr_val: float,
+    reason: str,
+    data: pd.DataFrame,
+    session_name: str,
+) -> SignalReport:
+    sl, tp1, tp2, tp3 = _forex_structural_sl_tp(symbol, action, close, atr_val, data)
+    if USE_LIMIT_ORDERS:
+        if symbol in ("XAU_USD", "US30"):
+            pb = max(atr_val * 0.25, 0.5)
+        elif "JPY" in symbol:
+            pb = max(atr_val * 0.25, 0.04)
+        else:
+            pb = max(atr_val * 0.25, 0.0003)
+
+        if action == "BUY":
+            limit_entry = close - pb
+            if limit_entry <= sl:
+                limit_entry = close - (close - sl) * 0.3
+            entry_val = limit_entry
+            order_type = "LIMIT"
+        elif action == "SELL":
+            limit_entry = close + pb
+            if limit_entry >= sl:
+                limit_entry = close + (sl - close) * 0.3
+            entry_val = limit_entry
+            order_type = "LIMIT"
+        else:
+            entry_val = close
+            order_type = "MARKET"
+
+        # Re-anchor targets to limit entry for pure 1:1 R:R
+        sl, tp1, tp2, tp3 = _forex_structural_sl_tp(symbol, action, close, atr_val, data, entry_price=entry_val)
+    else:
+        entry_val = close
+        order_type = "MARKET"
+
+    return SignalReport(
+        symbol=DISPLAY_NAMES.get(symbol, symbol),
+        action=action,
+        confidence=confidence,
+        trend=trend,
+        entry=entry_val,
+        stop_loss=sl,
+        take_profit=tp2,
+        reason=f"{reason} [{session_name}]",
+        tp1=tp1,
+        tp2=tp2,
+        tp3=tp3,
+        order_type=order_type,
+        market_price=close,
+    )
 
 
 def _analyze_forex_setup(
@@ -1081,53 +1196,20 @@ def _analyze_forex_setup(
             compounded_conf = min(98, base_conf + confluence_bonus)
             if compounded_conf >= gate_threshold:
                 reason = " | ".join(s.reason for s in same)
-                sl, tp1, tp2, tp3 = _forex_structural_sl_tp(symbol, direction, close, atr_val, data)
-                return SignalReport(
-                    symbol=DISPLAY_NAMES.get(symbol, symbol),
-                    action=direction,
-                    confidence=compounded_conf,
-                    trend=trend,
-                    entry=close,
-                    stop_loss=sl,
-                    take_profit=tp2,
-                    reason=f"{reason} [{session_name}]",
-                    tp1=tp1,
-                    tp2=tp2,
-                    tp3=tp3,
+                return _build_forex_report(
+                    symbol, direction, compounded_conf, trend, close, atr_val, reason, data, session_name
                 )
 
         if cand.confidence >= gate_threshold:
-            sl, tp1, tp2, tp3 = _forex_structural_sl_tp(symbol, direction, close, atr_val, data)
-            return SignalReport(
-                symbol=DISPLAY_NAMES.get(symbol, symbol),
-                action=direction,
-                confidence=cand.confidence,
-                trend=trend,
-                entry=close,
-                stop_loss=sl,
-                take_profit=tp2,
-                reason=f"{cand.reason} [{session_name}]",
-                tp1=tp1,
-                tp2=tp2,
-                tp3=tp3,
+            return _build_forex_report(
+                symbol, direction, cand.confidence, trend, close, atr_val, cand.reason, data, session_name
             )
 
     # Fallback to multi-factor scoring during active session
     fb_action, fb_conf, fb_reason, long_s, short_s = _fallback_scoring(data)
     if fb_action != "WAIT" and fb_conf >= gate_threshold:
-        sl, tp1, tp2, tp3 = _forex_structural_sl_tp(symbol, fb_action, close, atr_val, data)
-        return SignalReport(
-            symbol=DISPLAY_NAMES.get(symbol, symbol),
-            action=fb_action,
-            confidence=fb_conf,
-            trend=trend,
-            entry=close,
-            stop_loss=sl,
-            take_profit=tp2,
-            reason=f"{fb_reason} [{session_name}]",
-            tp1=tp1,
-            tp2=tp2,
-            tp3=tp3,
+        return _build_forex_report(
+            symbol, fb_action, fb_conf, trend, close, atr_val, fb_reason, data, session_name
         )
 
     fallback_conf = max(long_s, short_s)

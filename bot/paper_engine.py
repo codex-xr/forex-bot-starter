@@ -490,9 +490,12 @@ def open_paper_trade(
     size_usd: float | None = None,
     leverage: float | None = None,
     user_id: str | int | None = None,
+    order_type: str = "MARKET",
+    current_price: float | None = None,
 ) -> tuple[bool, str, dict | None]:
     """
     Opens a simulated paper trade with exact TP1 and SL limits and leverage for the given user.
+    Supports both instant MARKET orders and PENDING_LIMIT orders waiting for pullback.
     """
     symbol = normalize_symbol(symbol)
     store = _load_paper_store()
@@ -513,9 +516,10 @@ def open_paper_trade(
     # Check for existing open trade on the same symbol for THIS user
     for pos in ustate.positions.values():
         if pos.symbol == symbol:
+            status_desc = "Active position" if pos.status == "OPEN" else "Pending limit order"
             return (
                 False,
-                f"⚠️ Active position already exists for <b>{pos.display_symbol}</b> (Entry: <code>{_fmt_price(pos.entry_price)}</code>).\n"
+                f"⚠️ {status_desc} already exists for <b>{pos.display_symbol}</b> (Entry: <code>{_fmt_price(pos.entry_price)}</code>).\n"
                 f"Close it first with <code>/close {pos.display_symbol}</code> before entering a new one.",
                 None,
             )
@@ -531,6 +535,19 @@ def open_paper_trade(
     time_str = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
     pos_id = f"pos_{uid}_{int(now_ts * 1000)}_{symbol.lower()}"
 
+    # Determine order status: if LIMIT and not yet filled, mark PENDING_LIMIT
+    is_pending = False
+    if order_type.upper() == "LIMIT":
+        if clean_action == "BUY" and current_price is not None and current_price <= entry_price:
+            pos_status = "OPEN"
+        elif clean_action == "SELL" and current_price is not None and current_price >= entry_price:
+            pos_status = "OPEN"
+        else:
+            pos_status = "PENDING_LIMIT"
+            is_pending = True
+    else:
+        pos_status = "OPEN"
+
     position = PaperPosition(
         id=pos_id,
         symbol=symbol,
@@ -544,7 +561,7 @@ def open_paper_trade(
         size_usd=round(trade_size, 2),
         units=units,
         leverage=trade_lev,
-        status="OPEN",
+        status=pos_status,
         user_id=uid,
     )
 
@@ -553,17 +570,32 @@ def open_paper_trade(
 
     dir_emoji = "🟢 LONG" if clean_action == "BUY" else "🔴 SHORT"
     lev_text = f"{trade_lev:g}x"
-    msg = (
-        f"🚀 <b>Paper Trade Entered!</b>\n\n"
-        f"• <b>Asset:</b> <code>{display_sym}</code> ({dir_emoji})\n"
-        f"• <b>Leverage:</b> <code>{lev_text}</code>\n"
-        f"• <b>Entry Price:</b> <code>{_fmt_price(entry_price)}</code>\n"
-        f"• <b>Position Margin:</b> <code>${trade_size:,.2f}</code> (Notional: <code>${notional_size:,.2f}</code>)\n"
-        f"• <b>Take Profit (TP1):</b> <code>{_fmt_price(tp1)}</code>\n"
-        f"• <b>Stop Loss (SL):</b> <code>{_fmt_price(sl)}</code>\n"
-        f"• <b>Rule:</b> Pure 1:1 TP1/SL execution (Zero Break-Even adjustment)\n\n"
-        f"<i>Track live status anytime with <code>/status</code></i>"
-    )
+
+    if is_pending:
+        msg = (
+            f"🚀 <b>Paper Trade Entered! (Pending Limit Order)</b>\n\n"
+            f"• <b>Asset:</b> <code>{display_sym}</code> ({dir_emoji} LIMIT)\n"
+            f"• <b>Leverage:</b> <code>{lev_text}</code>\n"
+            f"• <b>Limit Entry:</b> <code>{_fmt_price(entry_price)}</code>\n"
+            f"• <b>Current Market:</b> <code>{_fmt_price(current_price or entry_price)}</code>\n"
+            f"• <b>Position Margin:</b> <code>${trade_size:,.2f}</code> (Notional: <code>${notional_size:,.2f}</code>)\n"
+            f"• <b>Take Profit (TP1):</b> <code>{_fmt_price(tp1)}</code>\n"
+            f"• <b>Stop Loss (SL):</b> <code>{_fmt_price(sl)}</code>\n"
+            f"• <b>Status:</b> ⏳ Waiting for market pullback to trigger fill...\n\n"
+            f"<i>Order will auto-fill on retest, or auto-cancel if TP1 is hit first.</i>"
+        )
+    else:
+        msg = (
+            f"🚀 <b>Paper Trade Entered!</b>\n\n"
+            f"• <b>Asset:</b> <code>{display_sym}</code> ({dir_emoji})\n"
+            f"• <b>Leverage:</b> <code>{lev_text}</code>\n"
+            f"• <b>Entry Price:</b> <code>{_fmt_price(entry_price)}</code>\n"
+            f"• <b>Position Margin:</b> <code>${trade_size:,.2f}</code> (Notional: <code>${notional_size:,.2f}</code>)\n"
+            f"• <b>Take Profit (TP1):</b> <code>{_fmt_price(tp1)}</code>\n"
+            f"• <b>Stop Loss (SL):</b> <code>{_fmt_price(sl)}</code>\n"
+            f"• <b>Rule:</b> Pure 1:1 TP1/SL execution (Zero Break-Even adjustment)\n\n"
+            f"<i>Track live status anytime with <code>/status</code></i>"
+        )
 
     return True, msg, asdict(position)
 
@@ -629,6 +661,11 @@ def close_paper_trade(
 
     if exit_price <= 0:
         return False, "❌ Invalid exit price.", None
+
+    if getattr(position, "status", "OPEN") == "PENDING_LIMIT":
+        del target_ustate.positions[pos_id]
+        _save_paper_store(store)
+        return True, f"✅ Cancelled pending limit order for <b>{position.display_symbol}</b>.", None
 
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     exit_ts = now_utc.timestamp()
@@ -753,6 +790,67 @@ def check_open_trades(user_id: str | int | None = None) -> list[str]:
         high_price = float(last_row.get("high", curr_close))
         low_price = float(last_row.get("low", curr_close))
 
+        if getattr(pos, "status", "OPEN") == "PENDING_LIMIT":
+            # 1. Check if price touched the limit entry (FILLED)
+            is_filled = False
+            if pos.action == "BUY" and (low_price <= pos.entry_price or curr_close <= pos.entry_price):
+                is_filled = True
+            elif pos.action == "SELL" and (high_price >= pos.entry_price or curr_close >= pos.entry_price):
+                is_filled = True
+
+            if is_filled:
+                pos.status = "OPEN"
+                _save_paper_store(store)
+                dir_emoji = "🟢 LONG" if pos.action == "BUY" else "🔴 SHORT"
+                fill_msg = (
+                    f"🔔 <b>LIMIT ORDER FILLED!</b>\n\n"
+                    f"• <b>Asset:</b> <code>{pos.display_symbol}</code> ({dir_emoji})\n"
+                    f"• <b>Filled Price:</b> <code>{_fmt_price(pos.entry_price)}</code>\n"
+                    f"• <b>Take Profit (TP1):</b> <code>{_fmt_price(pos.tp1)}</code>\n"
+                    f"• <b>Stop Loss (SL):</b> <code>{_fmt_price(pos.sl)}</code>\n"
+                    f"• <b>Status:</b> ⚡ Position is now LIVE and tracking!"
+                )
+                alerts.append(fill_msg)
+                if not os.getenv("PYTEST_CURRENT_TEST"):
+                    try:
+                        from bot.telegram import send_telegram_message
+                        target_chat = pos.user_id if (pos.user_id and pos.user_id != "default") else None
+                        send_telegram_message(fill_msg, chat_id=target_chat)
+                    except Exception as exc:
+                        print(f"[PaperCheck] Error notifying fill for {pos.user_id}: {exc}")
+                continue
+
+            # 2. Check if price touched TP1 before filling (CANCELLED / MISSED)
+            is_cancelled = False
+            if pos.action == "BUY" and (high_price >= pos.tp1 or curr_close >= pos.tp1):
+                is_cancelled = True
+            elif pos.action == "SELL" and (low_price <= pos.tp1 or curr_close <= pos.tp1):
+                is_cancelled = True
+
+            if is_cancelled:
+                uid = store._norm_user_id(pos.user_id)
+                ustate = store.get_user_state(uid)
+                ustate.positions.pop(pos.id, None)
+                _save_paper_store(store)
+                cancel_msg = (
+                    f"🚫 <b>PENDING LIMIT CANCELLED</b>\n\n"
+                    f"• <b>Asset:</b> <code>{pos.display_symbol}</code> ({pos.action} LIMIT)\n"
+                    f"• <b>Reason:</b> Price reached Take Profit (<code>{_fmt_price(pos.tp1)}</code>) before filling limit entry (<code>{_fmt_price(pos.entry_price)}</code>).\n"
+                    f"• <b>Action:</b> Stale order safely cleared to protect capital."
+                )
+                alerts.append(cancel_msg)
+                if not os.getenv("PYTEST_CURRENT_TEST"):
+                    try:
+                        from bot.telegram import send_telegram_message
+                        target_chat = pos.user_id if (pos.user_id and pos.user_id != "default") else None
+                        send_telegram_message(cancel_msg, chat_id=target_chat)
+                    except Exception as exc:
+                        print(f"[PaperCheck] Error notifying cancellation for {pos.user_id}: {exc}")
+                continue
+
+            # Still waiting for fill
+            continue
+
         target_reason = None
         target_exit = None
 
@@ -835,29 +933,41 @@ def get_status_report(user_id: str | int | None = None) -> tuple[str, dict | Non
             except Exception:
                 pass
 
-            if pos.action == "BUY":
-                pnl_usd = pos.units * (curr_price - pos.entry_price)
-            else:
-                pnl_usd = pos.units * (pos.entry_price - curr_price)
-
-            pnl_pct = (pnl_usd / pos.size_usd) * 100.0 if pos.size_usd > 0 else 0.0
             lev_tag = f" ({pos.leverage:g}x)" if pos.leverage > 1.0 else ""
-            side_str = f"🟢 LONG{lev_tag}" if pos.action == "BUY" else f"🔴 SHORT{lev_tag}"
+            if getattr(pos, "status", "OPEN") == "PENDING_LIMIT":
+                side_str = f"⏳ PENDING {pos.action} LIMIT{lev_tag}"
+                lines.append(f"<b>{idx}. {pos.display_symbol}</b> ({side_str})")
+                lines.append(f"   • Limit Entry: <code>{_fmt_price(pos.entry_price)}</code> | Current: <code>{_fmt_price(curr_price)}</code>")
+                lines.append(f"   • TP1: <code>{_fmt_price(pos.tp1)}</code> | SL: <code>{_fmt_price(pos.sl)}</code>")
+                lines.append(f"   • Status: ⏳ <b>Pending Fill</b> (Waiting for pullback)")
+                lines.append("")
+                close_buttons.append({
+                    "text": f"❌ Cancel {pos.display_symbol}",
+                    "callback_data": f"paper_close:{pid}",
+                })
+            else:
+                if pos.action == "BUY":
+                    pnl_usd = pos.units * (curr_price - pos.entry_price)
+                else:
+                    pnl_usd = pos.units * (pos.entry_price - curr_price)
 
-            total_unrealized_usd += pnl_usd
-            pnl_sign = "+" if pnl_usd >= 0 else ""
-            pnl_icon = "🟢" if pnl_usd >= 0 else "🔴"
+                pnl_pct = (pnl_usd / pos.size_usd) * 100.0 if pos.size_usd > 0 else 0.0
+                side_str = f"🟢 LONG{lev_tag}" if pos.action == "BUY" else f"🔴 SHORT{lev_tag}"
 
-            lines.append(f"<b>{idx}. {pos.display_symbol}</b> ({side_str})")
-            lines.append(f"   • Entry: <code>{_fmt_price(pos.entry_price)}</code> | Current: <code>{_fmt_price(curr_price)}</code>")
-            lines.append(f"   • TP1: <code>{_fmt_price(pos.tp1)}</code> | SL: <code>{_fmt_price(pos.sl)}</code>")
-            lines.append(f"   • Unrealized ROE: {pnl_icon} <b>{pnl_sign}${pnl_usd:,.2f}</b> ({pnl_sign}{pnl_pct:.2f}%)")
-            lines.append("")
+                total_unrealized_usd += pnl_usd
+                pnl_sign = "+" if pnl_usd >= 0 else ""
+                pnl_icon = "🟢" if pnl_usd >= 0 else "🔴"
 
-            close_buttons.append({
-                "text": f"❌ Close {pos.display_symbol}",
-                "callback_data": f"paper_close:{pid}",
-            })
+                lines.append(f"<b>{idx}. {pos.display_symbol}</b> ({side_str})")
+                lines.append(f"   • Entry: <code>{_fmt_price(pos.entry_price)}</code> | Current: <code>{_fmt_price(curr_price)}</code>")
+                lines.append(f"   • TP1: <code>{_fmt_price(pos.tp1)}</code> | SL: <code>{_fmt_price(pos.sl)}</code>")
+                lines.append(f"   • Unrealized ROE: {pnl_icon} <b>{pnl_sign}${pnl_usd:,.2f}</b> ({pnl_sign}{pnl_pct:.2f}%)")
+                lines.append("")
+
+                close_buttons.append({
+                    "text": f"❌ Close {pos.display_symbol}",
+                    "callback_data": f"paper_close:{pid}",
+                })
 
         tot_sign = "+" if total_unrealized_usd >= 0 else ""
         tot_icon = "🟢" if total_unrealized_usd >= 0 else "🔴"

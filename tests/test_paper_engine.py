@@ -522,3 +522,86 @@ class TestMultiUserIsolation:
         assert len(new_state.history) == 0
         assert new_state.settings.virtual_balance == 10000.0
 
+
+class TestPendingLimitOrders:
+    def test_open_pending_limit_order(self):
+        user = "test_limit_user"
+        ok, msg, pos = open_paper_trade(
+            "BTC_USD", "BUY", 49000.0, 47000.0, 51000.0,
+            user_id=user, order_type="LIMIT", current_price=50000.0,
+        )
+        assert ok is True
+        assert pos["status"] == "PENDING_LIMIT"
+        assert "Pending Limit Order" in msg
+
+        status_text, kb = get_status_report(user_id=user)
+        assert "PENDING BUY LIMIT" in status_text
+        assert "Pending Fill" in status_text
+        assert "Cancel BTCUSD" in str(kb)
+
+    def test_pending_limit_fills_on_pullback(self):
+        user = "test_fill_user"
+        ok, _, pos = open_paper_trade(
+            "SOL_USD", "BUY", 145.0, 135.0, 155.0,
+            user_id=user, order_type="LIMIT", current_price=150.0,
+        )
+        assert ok is True
+        assert pos["status"] == "PENDING_LIMIT"
+
+        # Simulate candle pulling back into the limit price
+        mock_df = pd.DataFrame([{
+            "open": 150.0,
+            "high": 151.0,
+            "low": 144.5,  # Touched limit!
+            "close": 146.0,
+        }])
+
+        with patch("bot.paper_engine.fetch_live_candles", return_value=mock_df):
+            alerts = check_open_trades(user_id=user)
+
+        assert any("LIMIT ORDER FILLED" in a for a in alerts)
+        store = _load_paper_store()
+        updated_pos = store.get_user_state(user_id=user).positions[pos["id"]]
+        assert updated_pos.status == "OPEN"
+
+    def test_pending_limit_cancels_if_tp1_hit_first(self):
+        user = "test_cancel_user"
+        ok, _, pos = open_paper_trade(
+            "ETH_USD", "BUY", 2900.0, 2700.0, 3200.0,
+            user_id=user, order_type="LIMIT", current_price=3000.0,
+        )
+        assert ok is True
+        assert pos["status"] == "PENDING_LIMIT"
+
+        # Price flies straight to TP1 without ever dipping to 2900
+        mock_df = pd.DataFrame([{
+            "open": 3000.0,
+            "high": 3210.0,  # Hit TP1!
+            "low": 2980.0,   # Never reached limit 2900
+            "close": 3205.0,
+        }])
+
+        with patch("bot.paper_engine.fetch_live_candles", return_value=mock_df):
+            alerts = check_open_trades(user_id=user)
+
+        assert any("PENDING LIMIT CANCELLED" in a for a in alerts)
+        store = _load_paper_store()
+        assert pos["id"] not in store.get_user_state(user_id=user).positions
+
+    def test_manual_cancel_pending_limit(self):
+        user = "test_manual_cancel"
+        ok, _, pos = open_paper_trade(
+            "DOGE_USD", "BUY", 0.18, 0.16, 0.20,
+            user_id=user, order_type="LIMIT", current_price=0.20,
+        )
+        assert ok is True
+        assert pos["status"] == "PENDING_LIMIT"
+
+        bal_before = get_paper_settings(user_id=user)["virtual_balance"]
+        c_ok, c_msg, _ = close_paper_trade(pos["id"], 0.19, user_id=user)
+        assert c_ok is True
+        assert "Cancelled pending limit order" in c_msg
+        bal_after = get_paper_settings(user_id=user)["virtual_balance"]
+        assert bal_before == bal_after
+
+

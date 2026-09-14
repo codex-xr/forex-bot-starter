@@ -430,3 +430,65 @@ class TestForexSessionGate:
         report = analyze_setup("EUR_USD", prices)
         assert report.action == "WAIT"
         assert "Off-hours" in report.reason
+
+
+class TestLimitOrderSignals:
+    def test_crypto_buy_limit_pricing(self):
+        from bot.signal_engine import _make_report
+        prices = _ohcv_close([50000.0] * 100)
+        data = compute_indicators(prices)
+        report = _make_report("BTC_USD", "BUY", 90, "Bullish", 50000.0, 500.0, "Breakout", data=data)
+        assert report.order_type == "LIMIT"
+        assert report.entry is not None
+        assert report.entry < 50000.0  # Discount pullback
+        assert report.stop_loss is not None
+        assert report.entry > report.stop_loss
+        expected_tp1 = round(report.entry + (report.entry - report.stop_loss) * 1.0, 8)
+        assert round(report.tp1, 4) == round(expected_tp1, 4)
+
+    def test_crypto_sell_limit_pricing(self):
+        from bot.signal_engine import _make_report
+        prices = _ohcv_close([50000.0] * 100)
+        data = compute_indicators(prices)
+        report = _make_report("BTC_USD", "SELL", 90, "Bearish", 50000.0, 500.0, "Breakdown", data=data)
+        assert report.order_type == "LIMIT"
+        assert report.entry is not None
+        assert report.entry > 50000.0  # Premium pullback
+        assert report.stop_loss is not None
+        assert report.entry < report.stop_loss
+        expected_tp1 = round(report.entry - (report.stop_loss - report.entry) * 1.0, 8)
+        assert round(report.tp1, 4) == round(expected_tp1, 4)
+
+    def test_limit_order_toggle_reversibility(self, monkeypatch):
+        import bot.signal_engine as se
+        monkeypatch.setattr(se, "USE_LIMIT_ORDERS", False)
+        prices = _ohcv_close([50000.0] * 100)
+        data = compute_indicators(prices)
+        report = se._make_report("BTC_USD", "BUY", 90, "Bullish", 50000.0, 500.0, "Breakout", data=data)
+        assert report.order_type == "MARKET"
+        assert report.entry == 50000.0
+
+    def test_limit_order_copy_paste_message_format(self):
+        from bot.signal_engine import SignalReport
+        r = SignalReport(
+            symbol="BTCUSD",
+            action="BUY",
+            confidence=85,
+            trend="Bullish",
+            entry=49800.0,
+            stop_loss=49000.0,
+            take_profit=50600.0,
+            reason="ICT Sweep + FVG",
+            tp1=50600.0,
+            tp2=51400.0,
+            tp3=52600.0,
+            order_type="LIMIT",
+            market_price=50000.0,
+        )
+        msg = r.to_message()
+        assert "VIP SIGNAL: BTCUSD" in msg
+        assert "ORDER TYPE:</b> <b>BUY LIMIT" in msg
+        assert "LIMIT ENTRY:</b> <code>49800.00" in msg
+        assert "Current Price:</b> <code>50000.00" in msg
+        assert "Cancel if TP1 reached before limit entry" in msg
+
