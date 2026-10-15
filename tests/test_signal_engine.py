@@ -433,11 +433,12 @@ class TestForexSessionGate:
 
 
 class TestLimitOrderSignals:
-    def test_crypto_buy_limit_pricing(self):
-        from bot.signal_engine import _make_report
+    def test_crypto_buy_limit_pricing(self, monkeypatch):
+        import bot.signal_engine as se
+        monkeypatch.setattr(se, "USE_LIMIT_ORDERS", True)
         prices = _ohcv_close([50000.0] * 100)
         data = compute_indicators(prices)
-        report = _make_report("BTC_USD", "BUY", 90, "Bullish", 50000.0, 500.0, "Breakout", data=data)
+        report = se._make_report("BTC_USD", "BUY", 90, "Bullish", 50000.0, 500.0, "Breakout", data=data)
         assert report.order_type == "LIMIT"
         assert report.entry is not None
         assert report.entry < 50000.0  # Discount pullback
@@ -446,11 +447,12 @@ class TestLimitOrderSignals:
         expected_tp1 = round(report.entry + (report.entry - report.stop_loss) * 1.0, 8)
         assert round(report.tp1, 4) == round(expected_tp1, 4)
 
-    def test_crypto_sell_limit_pricing(self):
-        from bot.signal_engine import _make_report
+    def test_crypto_sell_limit_pricing(self, monkeypatch):
+        import bot.signal_engine as se
+        monkeypatch.setattr(se, "USE_LIMIT_ORDERS", True)
         prices = _ohcv_close([50000.0] * 100)
         data = compute_indicators(prices)
-        report = _make_report("BTC_USD", "SELL", 90, "Bearish", 50000.0, 500.0, "Breakdown", data=data)
+        report = se._make_report("BTC_USD", "SELL", 90, "Bearish", 50000.0, 500.0, "Breakdown", data=data)
         assert report.order_type == "LIMIT"
         assert report.entry is not None
         assert report.entry > 50000.0  # Premium pullback
@@ -458,6 +460,26 @@ class TestLimitOrderSignals:
         assert report.entry < report.stop_loss
         expected_tp1 = round(report.entry - (report.stop_loss - report.entry) * 1.0, 8)
         assert round(report.tp1, 4) == round(expected_tp1, 4)
+
+    def test_market_order_default_and_entry_zone(self):
+        import bot.signal_engine as se
+        prices = _ohcv_close([50000.0] * 100)
+        data = compute_indicators(prices)
+        report = se._make_report("BTC_USD", "BUY", 90, "Bullish", 50000.0, 500.0, "Breakout", data=data)
+        assert report.order_type == "MARKET"
+        assert report.entry == 50000.0
+        msg = report.to_message()
+        assert "Instant Market <b>BUY NOW</b>" in msg
+        assert "📍 <b>Entry Zone:</b>" in msg
+
+    def test_stop_loss_minimum_buffer(self):
+        import bot.signal_engine as se
+        prices = _ohcv_close([85000.0] * 100)
+        data = compute_indicators(prices)
+        # Low ATR of 50 on BTC should still have at least 0.8% ($680) risk breathing room
+        report = se._make_report("BTC_USD", "BUY", 90, "Bullish", 85000.0, 50.0, "Breakout", data=data)
+        sl_dist = report.entry - report.stop_loss
+        assert sl_dist >= 85000.0 * 0.008  # at least $680
 
     def test_limit_order_toggle_reversibility(self, monkeypatch):
         import bot.signal_engine as se
@@ -467,6 +489,11 @@ class TestLimitOrderSignals:
         report = se._make_report("BTC_USD", "BUY", 90, "Bullish", 50000.0, 500.0, "Breakout", data=data)
         assert report.order_type == "MARKET"
         assert report.entry == 50000.0
+
+        monkeypatch.setattr(se, "USE_LIMIT_ORDERS", True)
+        report_limit = se._make_report("BTC_USD", "BUY", 90, "Bullish", 50000.0, 500.0, "Breakout", data=data)
+        assert report_limit.order_type == "LIMIT"
+        assert report_limit.entry < 50000.0
 
     def test_limit_order_copy_paste_message_format(self):
         from bot.signal_engine import SignalReport

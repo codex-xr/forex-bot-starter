@@ -276,12 +276,12 @@ def handle_callback_query(callback_query: dict) -> None:
             action = parts[2]
             try:
                 candles = fetch_live_candles(symbol)
-                report = analyze_setup(symbol, candles, min_confidence=50)
+                report = analyze_setup(symbol, candles, min_confidence=60)
                 curr_close = float(candles.iloc[-1]["close"])
                 entry = report.entry or curr_close
                 sl = report.stop_loss or (entry * 0.98 if action == "BUY" else entry * 1.02)
                 tp1 = report.tp1 or report.take_profit or (entry * 1.03 if action == "BUY" else entry * 0.97)
-                order_type = getattr(report, "order_type", "LIMIT")
+                order_type = getattr(report, "order_type", "MARKET")
                 ok, enter_msg, _ = open_paper_trade(
                     symbol, action, entry, sl, tp1, user_id=chat_id,
                     order_type=order_type, current_price=curr_close,
@@ -816,13 +816,13 @@ def handle_message(message: dict) -> None:
 
             try:
                 candles = fetch_live_candles(target_sym)
-                report = analyze_setup(target_sym, candles, min_confidence=50)
+                report = analyze_setup(target_sym, candles, min_confidence=60)
                 action = "BUY" if report.action in ("BUY", "LONG") else ("SELL" if report.action in ("SELL", "SHORT") else "BUY")
                 curr_price = float(candles.iloc[-1]["close"])
                 entry = report.entry or curr_price
                 sl = report.stop_loss or (entry * 0.98 if action == "BUY" else entry * 1.02)
                 tp1 = report.tp1 or report.take_profit or (entry * 1.03 if action == "BUY" else entry * 0.97)
-                order_type = getattr(report, "order_type", "LIMIT")
+                order_type = getattr(report, "order_type", "MARKET")
                 ok, enter_msg, _ = open_paper_trade(
                     target_sym, action, entry, sl, tp1, user_id=chat_id,
                     order_type=order_type, current_price=curr_price,

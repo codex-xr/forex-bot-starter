@@ -6,7 +6,7 @@ import pandas as pd
 
 from bot.symbols import DISPLAY_NAMES
 
-USE_LIMIT_ORDERS = os.getenv("USE_LIMIT_ORDERS", "true").lower() in ("true", "1", "yes")
+USE_LIMIT_ORDERS = os.getenv("USE_LIMIT_ORDERS", "false").lower() in ("true", "1", "yes")
 
 
 def _fmt_price(val: float | None) -> str:
@@ -38,7 +38,7 @@ class SignalReport:
     tp3: float | None = None
     catalyst: str | None = None
     smart_money: str | None = None
-    order_type: str = "LIMIT"
+    order_type: str = "MARKET"
     market_price: float | None = None
 
     def to_message(self) -> str:
@@ -74,9 +74,18 @@ class SignalReport:
                 f"⏳ <b>Rule:</b> Cancel if TP1 reached before limit entry\n"
             )
         else:
+            entry_p = self.entry or 0.0
+            if self.action == "BUY":
+                zone_low = entry_p * 0.9985
+                zone_high = entry_p * 1.0020
+            else:
+                zone_low = entry_p * 0.9980
+                zone_high = entry_p * 1.0015
+
             order_line = (
-                f"⚡ <b>Action:</b> Instant Market <b>{self.action}</b> (or <b>{self.action} STOP</b> at {_fmt_price(self.entry)})\n"
+                f"⚡ <b>Action:</b> Instant Market <b>{self.action} NOW</b>\n"
                 f"Entry: {_fmt_price(self.entry)}\n"
+                f"📍 <b>Entry Zone:</b> {_fmt_price(zone_low)} – {_fmt_price(zone_high)}\n"
                 if self.entry is not None else ""
             )
             market_line = ""
@@ -597,13 +606,28 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
     max_risk_pct = 0.025 if symbol in CRYPTO_MEME else 0.020
     max_risk_dist = close * max_risk_pct
 
+    # Minimum risk floor to give positions healthy breathing room against normal market noise
+    if symbol in CRYPTO_MEME:
+        min_risk_pct = 0.015
+    elif symbol in CRYPTO_MID_CAP:
+        min_risk_pct = 0.010
+    elif symbol in CRYPTO_LARGE_CAP:
+        min_risk_pct = 0.008
+    elif symbol in ("XAU_USD", "US30"):
+        min_risk_pct = 0.004
+    else:
+        min_risk_pct = 0.002
+    min_risk_dist = min(max(atr_val * 1.5, close * min_risk_pct), max_risk_dist * 0.85)
+
     if action == "BUY":
         if data is not None and len(data) >= 15:
             swing_low = float(data.iloc[-21:-1]["low"].min())
             sl = min(close - atr_val * sl_mult, swing_low - atr_val * 0.5)
         else:
             sl = close - atr_val * sl_mult
-        # 25x leverage risk clamp
+        # Enforce minimum risk floor (sl cannot be too close to entry)
+        sl = min(sl, close - min_risk_dist)
+        # 25x leverage risk clamp (sl cannot be too far from entry)
         sl = max(sl, close - max_risk_dist)
 
         if USE_LIMIT_ORDERS:
@@ -611,14 +635,14 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
             limit_entry = close - pullback
             if limit_entry <= sl:
                 limit_entry = close - (close - sl) * 0.3
-            risk = max(limit_entry - sl, atr_val * 0.8)
+            risk = max(limit_entry - sl, min_risk_dist)
             tp1 = limit_entry + risk * 1.0  # Pure 1:1 TP1
             tp2 = limit_entry + risk * (tp_mult / sl_mult)
             tp3 = limit_entry + risk * 4.0
             entry = limit_entry
             order_type = "LIMIT"
         else:
-            risk = max(close - sl, atr_val * 0.8)
+            risk = close - sl
             tp1 = close + risk * 1.0  # Pure 1:1 TP1
             tp2 = close + risk * (tp_mult / sl_mult)
             tp3 = close + risk * 4.0
@@ -631,7 +655,9 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
             sl = max(close + atr_val * sl_mult, swing_high + atr_val * 0.5)
         else:
             sl = close + atr_val * sl_mult
-        # 25x leverage risk clamp
+        # Enforce minimum risk floor (sl cannot be too close to entry)
+        sl = max(sl, close + min_risk_dist)
+        # 25x leverage risk clamp (sl cannot be too far from entry)
         sl = min(sl, close + max_risk_dist)
 
         if USE_LIMIT_ORDERS:
@@ -639,14 +665,14 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
             limit_entry = close + pullback
             if limit_entry >= sl:
                 limit_entry = close + (sl - close) * 0.3
-            risk = max(sl - limit_entry, atr_val * 0.8)
+            risk = max(sl - limit_entry, min_risk_dist)
             tp1 = limit_entry - risk * 1.0  # Pure 1:1 TP1
             tp2 = limit_entry - risk * (tp_mult / sl_mult)
             tp3 = limit_entry - risk * 4.0
             entry = limit_entry
             order_type = "LIMIT"
         else:
-            risk = max(sl - close, atr_val * 0.8)
+            risk = sl - close
             tp1 = close - risk * 1.0  # Pure 1:1 TP1
             tp2 = close - risk * (tp_mult / sl_mult)
             tp3 = close - risk * 4.0
