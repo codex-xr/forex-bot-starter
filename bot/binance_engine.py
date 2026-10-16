@@ -85,8 +85,8 @@ def get_binance_symbol_pair(symbol: str) -> tuple[str | None, str | None]:
 def fetch_binance_klines(
     symbol: str,
     interval: str = "15m",
-    limit: int = 100,
-    timeout: float = 2.0,
+    limit: int = 250,
+    timeout: float = 3.5,
 ) -> pd.DataFrame:
     """
     Fetches high-resolution OHLCV candles with Taker Buy Volume from Binance.
@@ -95,7 +95,7 @@ def fetch_binance_klines(
     spot_sym, fut_sym = get_binance_symbol_pair(symbol)
     target_sym = spot_sym or fut_sym or symbol
 
-    for host in ["https://data-api.binance.vision", "https://api.binance.com"]:
+    for host in ["https://data-api.binance.vision", "https://data-api.binance.vision", "https://api.binance.com", "https://api1.binance.com"]:
         try:
             url = f"{host}/api/v3/klines"
             res = _SESSION.get(

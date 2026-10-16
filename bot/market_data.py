@@ -25,7 +25,7 @@ def _map_interval_to_binance(interval: str) -> str:
     return "15m"
 
 
-def fetch_dex_candles(network: str, pool_address: str, aggregate: int = 15, limit: int = 100) -> pd.DataFrame:
+def fetch_dex_candles(network: str, pool_address: str, aggregate: int = 15, limit: int = 250) -> pd.DataFrame:
     url = f"https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}/ohlcv/minute"
     response = requests.get(
         url,
@@ -55,7 +55,7 @@ def fetch_dex_candles(network: str, pool_address: str, aggregate: int = 15, limi
     return data.dropna().sort_values("time").reset_index(drop=True)
 
 
-def fetch_live_candles(symbol: str, interval: str = "15min", outputsize: int = 100) -> pd.DataFrame:
+def fetch_live_candles(symbol: str, interval: str = "15min", outputsize: int = 250) -> pd.DataFrame:
     symbol = normalize_symbol(symbol)
     # 1. Specialized Solana DEX Pools (e.g. $ANSEM)
     if symbol in DEX_POOLS:

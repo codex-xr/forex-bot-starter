@@ -519,3 +519,35 @@ class TestLimitOrderSignals:
         assert "Current Price:</b> <code>50000.00" in msg
         assert "Cancel if TP1 reached before limit entry" in msg
 
+
+class TestSignalQualityUpgrades:
+    def test_rvol_carries_over_from_closed_candle(self):
+        prices = _ohcv_close([100.0] * 30)
+        prices["volume"] = [1000.0] * 28 + [2500.0, 100.0]  # prev candle 2.5x RVol, current unclosed candle 0.1x
+        data = compute_indicators(prices)
+        assert data["rvol"].iloc[-1] >= 2.0
+
+    def test_anti_chasing_overextended_climax_blocked(self):
+        # Normal steady uptrend followed by an extreme 10x ATR climax candle
+        closes = [100.0 + i * 0.2 for i in range(99)] + [145.0]
+        prices = _ohcv_close(closes)
+        prices.loc[99, "open"] = 120.0
+        prices.loc[99, "high"] = 146.0
+        prices.loc[99, "low"] = 119.5
+        prices["volume"] = [1000.0] * 99 + [5000.0]
+        data = compute_indicators(prices)
+        sig = _crypto_momentum_surge(data, "BTC_USD")
+        assert sig.action == "HOLD"
+
+    def test_fallback_scoring_blocks_opposite_color_candle(self):
+        # Uptrending series where the final candle dumps hard red below open
+        closes = [100.0 + i * 0.5 for i in range(99)] + [148.0]
+        prices = _ohcv_close(closes)
+        prices.loc[99, "open"] = 152.0  # Bearish red candle (close 148 < open 152)
+        prices.loc[99, "high"] = 152.5
+        prices.loc[99, "low"] = 147.5
+        data = compute_indicators(prices)
+        action, _, _, _, _ = _fallback_scoring(data)
+        assert action != "BUY"
+
+
