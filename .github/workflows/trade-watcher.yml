@@ -9,6 +9,7 @@ jobs:
   watch_trades:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger 24/7 Trade Monitor on Vercel
+      - name: Trigger 24/7 Trade Monitor on Vercel Webhook
         run: |
+          curl -sS -X POST -H "Content-Type: application/json" -d '{"action":"check_trades"}' --max-time 30 "https://forex-bot-starter-codex.vercel.app/api/webhook" || true
           curl -sS --max-time 30 "https://forex-bot-starter-codex.vercel.app/api/cron?mode=trades" || true

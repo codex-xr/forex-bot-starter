@@ -54,7 +54,13 @@ class handler(BaseHTTPRequestHandler):
 
         try:
             update = json.loads(post_data.decode("utf-8"))
-            if "callback_query" in update:
+            if update.get("action") == "check_trades":
+                from bot.paper_engine import check_open_trades
+                from bot.access_control import process_due_broadcasts
+                alerts = check_open_trades()
+                bcasts = process_due_broadcasts()
+                resp_payload = {"ok": True, "paper_trade_alerts": len(alerts), "broadcasts_executed": bcasts}
+            elif "callback_query" in update:
                 cb = update["callback_query"]
                 qid = cb.get("id")
                 cdata = cb.get("data")
