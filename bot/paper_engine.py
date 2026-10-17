@@ -305,19 +305,22 @@ def _load_from_cloud() -> PaperStore | None:
     if not url or not token:
         return None
 
-    try:
-        resp = requests.get(
-            f"{url}/get/{REDIS_PAPER_KEY}",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=2,
-        )
-        if resp.status_code == 200:
-            val = resp.json().get("result")
-            if val:
-                data = json.loads(val)
-                return PaperStore.from_dict(data)
-    except Exception as exc:
-        print(f"[PaperCloud] Error loading from Upstash Redis: {exc}")
+    for attempt in range(2):
+        try:
+            resp = requests.get(
+                f"{url}/get/{REDIS_PAPER_KEY}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                val = resp.json().get("result")
+                if val:
+                    data = json.loads(val)
+                    return PaperStore.from_dict(data)
+                return None
+        except Exception as exc:
+            if attempt == 1:
+                print(f"[PaperCloud] Error loading from Upstash Redis: {exc}")
     return None
 
 
@@ -327,18 +330,21 @@ def _save_to_cloud(store: PaperStore) -> bool:
     if not url or not token:
         return False
 
-    try:
-        payload = json.dumps(store.to_dict())
-        resp = requests.post(
-            f"{url}/set/{REDIS_PAPER_KEY}",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "text/plain"},
-            data=payload,
-            timeout=2,
-        )
-        return resp.status_code == 200
-    except Exception as exc:
-        print(f"[PaperCloud] Error saving to Upstash Redis: {exc}")
-        return False
+    payload = json.dumps(store.to_dict())
+    for attempt in range(2):
+        try:
+            resp = requests.post(
+                f"{url}/set/{REDIS_PAPER_KEY}",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "text/plain"},
+                data=payload,
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                return True
+        except Exception as exc:
+            if attempt == 1:
+                print(f"[PaperCloud] Error saving to Upstash Redis: {exc}")
+    return False
 
 
 def _load_paper_store() -> PaperStore:
@@ -738,12 +744,15 @@ def close_paper_trade(
 
 
 import concurrent.futures
+import pandas as pd
+
+_LATEST_PRICE_CACHE: dict[str, tuple[float, float]] = {}
 
 
 def check_open_trades(user_id: str | int | None = None) -> list[str]:
     """
-    Checks real-time market prices against active open trades.
-    If a trade reached TP1 or SL, immediately closes the trade (zero Break-Even adjustment),
+    Checks real-time market prices and all historical candles since trade entry against active open trades.
+    If a trade reached TP1 or SL at any point (even while the user was offline), immediately closes the trade,
     updates the owner's account, and delivers an alert directly to the owning user.
     """
     # Skip live network calls in automated test suite unless mocked
@@ -766,120 +775,165 @@ def check_open_trades(user_id: str | int | None = None) -> list[str]:
 
     alerts: list[str] = []
 
-    # Fetch live candles concurrently in parallel
-    sym_dfs = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(positions_to_check))) as executor:
-        future_to_pos = {
-            executor.submit(fetch_live_candles, pos.symbol): pos
-            for pos in positions_to_check
+    # Fetch live candles concurrently by unique symbol to prevent duplicate network load
+    unique_symbols = list(dict.fromkeys(pos.symbol for pos in positions_to_check))
+    sym_dfs: dict[str, pd.DataFrame] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(unique_symbols))) as executor:
+        future_to_sym = {
+            executor.submit(fetch_live_candles, sym): sym
+            for sym in unique_symbols
         }
-        for future in concurrent.futures.as_completed(future_to_pos):
-            pos = future_to_pos[future]
+        for future in concurrent.futures.as_completed(future_to_sym):
+            sym = future_to_sym[future]
             try:
-                sym_dfs[pos.id] = future.result()
+                res_df = future.result()
+                if res_df is not None and not res_df.empty:
+                    sym_dfs[sym] = res_df
+                    _LATEST_PRICE_CACHE[sym] = (time.time(), float(res_df.iloc[-1]["close"]))
             except Exception as exc:
-                print(f"[PaperCheck] Error checking {pos.symbol}: {exc}")
+                print(f"[PaperCheck] Error checking {sym}: {exc}")
+
+    now_ts = time.time()
+    is_pytest = bool(os.getenv("PYTEST_CURRENT_TEST"))
 
     for pos in positions_to_check:
-        df = sym_dfs.get(pos.id)
+        df = sym_dfs.get(pos.symbol)
         if df is None or df.empty:
             continue
 
-        last_row = df.iloc[-1]
-        curr_close = float(last_row["close"])
-        high_price = float(last_row.get("high", curr_close))
-        low_price = float(last_row.get("low", curr_close))
-
-        if getattr(pos, "status", "OPEN") == "PENDING_LIMIT":
-            # 1. Check if price touched the limit entry (FILLED)
-            is_filled = False
-            if pos.action == "BUY" and (low_price <= pos.entry_price or curr_close <= pos.entry_price):
-                is_filled = True
-            elif pos.action == "SELL" and (high_price >= pos.entry_price or curr_close >= pos.entry_price):
-                is_filled = True
-
-            if is_filled:
-                pos.status = "OPEN"
-                _save_paper_store(store)
-                dir_emoji = "🟢 LONG" if pos.action == "BUY" else "🔴 SHORT"
-                fill_msg = (
-                    f"🔔 <b>LIMIT ORDER FILLED!</b>\n\n"
-                    f"• <b>Asset:</b> <code>{pos.display_symbol}</code> ({dir_emoji})\n"
-                    f"• <b>Filled Price:</b> <code>{_fmt_price(pos.entry_price)}</code>\n"
-                    f"• <b>Take Profit (TP1):</b> <code>{_fmt_price(pos.tp1)}</code>\n"
-                    f"• <b>Stop Loss (SL):</b> <code>{_fmt_price(pos.sl)}</code>\n"
-                    f"• <b>Status:</b> ⚡ Position is now LIVE and tracking!"
-                )
-                alerts.append(fill_msg)
-                if not os.getenv("PYTEST_CURRENT_TEST"):
-                    try:
-                        from bot.telegram import send_telegram_message
-                        target_chat = pos.user_id if (pos.user_id and pos.user_id != "default") else None
-                        send_telegram_message(fill_msg, chat_id=target_chat)
-                    except Exception as exc:
-                        print(f"[PaperCheck] Error notifying fill for {pos.user_id}: {exc}")
-                continue
-
-            # 2. Check if price touched TP1 before filling (CANCELLED / MISSED)
-            is_cancelled = False
-            if pos.action == "BUY" and (high_price >= pos.tp1 or curr_close >= pos.tp1):
-                is_cancelled = True
-            elif pos.action == "SELL" and (low_price <= pos.tp1 or curr_close <= pos.tp1):
-                is_cancelled = True
-
-            if is_cancelled:
-                uid = store._norm_user_id(pos.user_id)
-                ustate = store.get_user_state(uid)
-                ustate.positions.pop(pos.id, None)
-                _save_paper_store(store)
-                cancel_msg = (
-                    f"🚫 <b>PENDING LIMIT CANCELLED</b>\n\n"
-                    f"• <b>Asset:</b> <code>{pos.display_symbol}</code> ({pos.action} LIMIT)\n"
-                    f"• <b>Reason:</b> Price reached Take Profit (<code>{_fmt_price(pos.tp1)}</code>) before filling limit entry (<code>{_fmt_price(pos.entry_price)}</code>).\n"
-                    f"• <b>Action:</b> Stale order safely cleared to protect capital."
-                )
-                alerts.append(cancel_msg)
-                if not os.getenv("PYTEST_CURRENT_TEST"):
-                    try:
-                        from bot.telegram import send_telegram_message
-                        target_chat = pos.user_id if (pos.user_id and pos.user_id != "default") else None
-                        send_telegram_message(cancel_msg, chat_id=target_chat)
-                    except Exception as exc:
-                        print(f"[PaperCheck] Error notifying cancellation for {pos.user_id}: {exc}")
-                continue
-
-            # Still waiting for fill
-            continue
+        # Slice all candles from the moment the trade was entered up to now so offline TP/SL hits are never missed
+        has_time_col = "time" in df.columns and pos.entry_ts > 0
+        if has_time_col:
+            try:
+                entry_dt = pd.to_datetime(pos.entry_ts, unit="s", utc=True)
+                entry_floor = entry_dt.floor("15min")
+                relevant_df = df[df["time"] >= entry_floor]
+                if relevant_df.empty:
+                    relevant_df = df.iloc[-1:]
+            except Exception:
+                relevant_df = df.iloc[-1:]
+                has_time_col = False
+        else:
+            relevant_df = df.iloc[-1:]
 
         target_reason = None
         target_exit = None
+        order_cancelled = False
 
-        # Long evaluation
-        if pos.action == "BUY":
-            # Check TP1 first
-            if high_price >= pos.tp1 or curr_close >= pos.tp1:
-                target_reason = "TP1_HIT"
-                target_exit = pos.tp1
-            elif low_price <= pos.sl or curr_close <= pos.sl:
-                target_reason = "SL_HIT"
-                target_exit = pos.sl
+        for _, row in relevant_df.iterrows():
+            curr_close = float(row["close"])
+            high_price = float(row.get("high", curr_close))
+            low_price = float(row.get("low", curr_close))
 
-        # Short evaluation
-        elif pos.action == "SELL":
-            # Check TP1 first (for shorts, TP1 is lower)
-            if low_price <= pos.tp1 or curr_close <= pos.tp1:
-                target_reason = "TP1_HIT"
-                target_exit = pos.tp1
-            elif high_price >= pos.sl or curr_close >= pos.sl:
-                target_reason = "SL_HIT"
-                target_exit = pos.sl
+            # Protect brand-new trades (< 2 min old) from pre-entry wicks on the opening candle
+            if has_time_col and not is_pytest and (now_ts - pos.entry_ts) < 120:
+                try:
+                    row_dt = pd.to_datetime(row["time"], utc=True)
+                    if row_dt < entry_dt:
+                        high_price = curr_close
+                        low_price = curr_close
+                except Exception:
+                    pass
+
+            if getattr(pos, "status", "OPEN") == "PENDING_LIMIT":
+                # 1. Check if price touched the limit entry (FILLED)
+                is_filled = False
+                if pos.action == "BUY" and (low_price <= pos.entry_price or curr_close <= pos.entry_price):
+                    is_filled = True
+                elif pos.action == "SELL" and (high_price >= pos.entry_price or curr_close >= pos.entry_price):
+                    is_filled = True
+
+                if is_filled:
+                    store = _load_paper_store()
+                    uid = store._norm_user_id(pos.user_id)
+                    ustate = store.get_user_state(uid)
+                    if pos.id in ustate.positions:
+                        ustate.positions[pos.id].status = "OPEN"
+                    pos.status = "OPEN"
+                    _save_paper_store(store)
+                    dir_emoji = "🟢 LONG" if pos.action == "BUY" else "🔴 SHORT"
+                    fill_msg = (
+                        f"🔔 <b>LIMIT ORDER FILLED!</b>\n\n"
+                        f"• <b>Asset:</b> <code>{pos.display_symbol}</code> ({dir_emoji})\n"
+                        f"• <b>Filled Price:</b> <code>{_fmt_price(pos.entry_price)}</code>\n"
+                        f"• <b>Take Profit (TP1):</b> <code>{_fmt_price(pos.tp1)}</code>\n"
+                        f"• <b>Stop Loss (SL):</b> <code>{_fmt_price(pos.sl)}</code>\n"
+                        f"• <b>Status:</b> ⚡ Position is now LIVE and tracking!"
+                    )
+                    alerts.append(fill_msg)
+                    if not is_pytest:
+                        try:
+                            from bot.telegram import send_telegram_message
+                            target_chat = pos.user_id if (pos.user_id and pos.user_id != "default") else None
+                            send_telegram_message(fill_msg, chat_id=target_chat)
+                        except Exception as exc:
+                            print(f"[PaperCheck] Error notifying fill for {pos.user_id}: {exc}")
+                    continue
+
+                # 2. Check if price touched TP1 before filling (CANCELLED / MISSED)
+                is_cancelled = False
+                if pos.action == "BUY" and (high_price >= pos.tp1 or curr_close >= pos.tp1):
+                    is_cancelled = True
+                elif pos.action == "SELL" and (low_price <= pos.tp1 or curr_close <= pos.tp1):
+                    is_cancelled = True
+
+                if is_cancelled:
+                    store = _load_paper_store()
+                    uid = store._norm_user_id(pos.user_id)
+                    ustate = store.get_user_state(uid)
+                    ustate.positions.pop(pos.id, None)
+                    _save_paper_store(store)
+                    cancel_msg = (
+                        f"🚫 <b>PENDING LIMIT CANCELLED</b>\n\n"
+                        f"• <b>Asset:</b> <code>{pos.display_symbol}</code> ({pos.action} LIMIT)\n"
+                        f"• <b>Reason:</b> Price reached Take Profit (<code>{_fmt_price(pos.tp1)}</code>) before filling limit entry (<code>{_fmt_price(pos.entry_price)}</code>).\n"
+                        f"• <b>Action:</b> Stale order safely cleared to protect capital."
+                    )
+                    alerts.append(cancel_msg)
+                    if not is_pytest:
+                        try:
+                            from bot.telegram import send_telegram_message
+                            target_chat = pos.user_id if (pos.user_id and pos.user_id != "default") else None
+                            send_telegram_message(cancel_msg, chat_id=target_chat)
+                        except Exception as exc:
+                            print(f"[PaperCheck] Error notifying cancellation for {pos.user_id}: {exc}")
+                    order_cancelled = True
+                    break
+
+                # Still waiting for fill on this candle
+                continue
+
+            # Long evaluation
+            if pos.action == "BUY":
+                if high_price >= pos.tp1 or curr_close >= pos.tp1:
+                    target_reason = "TP1_HIT"
+                    target_exit = pos.tp1
+                    break
+                elif low_price <= pos.sl or curr_close <= pos.sl:
+                    target_reason = "SL_HIT"
+                    target_exit = pos.sl
+                    break
+
+            # Short evaluation
+            elif pos.action == "SELL":
+                if low_price <= pos.tp1 or curr_close <= pos.tp1:
+                    target_reason = "TP1_HIT"
+                    target_exit = pos.tp1
+                    break
+                elif high_price >= pos.sl or curr_close >= pos.sl:
+                    target_reason = "SL_HIT"
+                    target_exit = pos.sl
+                    break
+
+        if order_cancelled:
+            continue
 
         if target_reason and target_exit:
             ok, alert_msg, _ = close_paper_trade(pos.id, target_exit, reason=target_reason, user_id=pos.user_id)
             if ok and alert_msg:
                 alerts.append(alert_msg)
                 # Dispatch alert to owning user
-                if not os.getenv("PYTEST_CURRENT_TEST"):
+                if not is_pytest:
                     try:
                         from bot.telegram import send_telegram_message
                         target_chat = pos.user_id if (pos.user_id and pos.user_id != "default") else None
@@ -896,6 +950,48 @@ def get_status_report(user_id: str | int | None = None) -> tuple[str, dict | Non
     live unrealized PnL, progress towards TP1/SL, and quick manual close buttons for the specified user.
     """
     check_open_trades(user_id=user_id)
+    store = _load_paper_store()
+    ustate = store.get_user_state(user_id)
+
+    # Second-pass safety check using live prices so /status never displays an unclosed trade past TP1/SL
+    for pid, pos in list(ustate.positions.items()):
+        curr_price = pos.entry_price
+        cached = _LATEST_PRICE_CACHE.get(pos.symbol)
+        if cached and (time.time() - cached[0]) < 10.0 and not hasattr(fetch_live_candles, "mock_calls"):
+            curr_price = cached[1]
+        else:
+            try:
+                if not os.getenv("PYTEST_CURRENT_TEST") or hasattr(fetch_live_candles, "mock_calls"):
+                    df = fetch_live_candles(pos.symbol)
+                    if not df.empty:
+                        curr_price = float(df.iloc[-1]["close"])
+                        _LATEST_PRICE_CACHE[pos.symbol] = (time.time(), curr_price)
+            except Exception:
+                pass
+
+        if getattr(pos, "status", "OPEN") == "OPEN":
+            hit_reason = None
+            hit_exit = None
+            if pos.action == "BUY":
+                if curr_price >= pos.tp1:
+                    hit_reason, hit_exit = "TP1_HIT", pos.tp1
+                elif curr_price <= pos.sl:
+                    hit_reason, hit_exit = "SL_HIT", pos.sl
+            elif pos.action == "SELL":
+                if curr_price <= pos.tp1:
+                    hit_reason, hit_exit = "TP1_HIT", pos.tp1
+                elif curr_price >= pos.sl:
+                    hit_reason, hit_exit = "SL_HIT", pos.sl
+            if hit_reason and hit_exit:
+                ok, alert_msg, _ = close_paper_trade(pid, hit_exit, reason=hit_reason, user_id=pos.user_id)
+                if ok and alert_msg and not os.getenv("PYTEST_CURRENT_TEST"):
+                    try:
+                        from bot.telegram import send_telegram_message
+                        target_chat = pos.user_id if (pos.user_id and pos.user_id != "default") else None
+                        send_telegram_message(alert_msg, chat_id=target_chat)
+                    except Exception:
+                        pass
+
     store = _load_paper_store()
     ustate = store.get_user_state(user_id)
 
@@ -924,14 +1020,9 @@ def get_status_report(user_id: str | int | None = None) -> tuple[str, dict | Non
 
         for idx, (pid, pos) in enumerate(ustate.positions.items(), 1):
             curr_price = pos.entry_price
-            try:
-                # In tests, avoid unmocked calls
-                if not os.getenv("PYTEST_CURRENT_TEST") or hasattr(fetch_live_candles, "mock_calls"):
-                    df = fetch_live_candles(pos.symbol)
-                    if not df.empty:
-                        curr_price = float(df.iloc[-1]["close"])
-            except Exception:
-                pass
+            cached = _LATEST_PRICE_CACHE.get(pos.symbol)
+            if cached and (time.time() - cached[0]) < 15.0:
+                curr_price = cached[1]
 
             lev_tag = f" ({pos.leverage:g}x)" if pos.leverage > 1.0 else ""
             if getattr(pos, "status", "OPEN") == "PENDING_LIMIT":

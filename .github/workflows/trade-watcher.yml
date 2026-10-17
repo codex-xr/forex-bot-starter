@@ -1,0 +1,14 @@
+name: 24/7 Paper Trade TP/SL Watcher
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+jobs:
+  watch_trades:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger 24/7 Trade Monitor on Vercel
+        run: |
+          curl -sS --max-time 30 "https://forex-bot-starter-codex.vercel.app/api/cron?mode=trades" || true

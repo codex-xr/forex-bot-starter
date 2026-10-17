@@ -680,15 +680,15 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
                 limit_entry = close - (close - sl) * 0.3
             risk = max(limit_entry - sl, min_risk_dist)
             tp1 = limit_entry + risk * 1.0  # Pure 1:1 TP1
-            tp2 = limit_entry + risk * (tp_mult / sl_mult)
-            tp3 = limit_entry + risk * 4.0
+            tp2 = limit_entry + risk * 2.0  # 1:2.0 Runner Target
+            tp3 = limit_entry + risk * 3.5  # 1:3.5 Max Extension
             entry = limit_entry
             order_type = "LIMIT"
         else:
             risk = close - sl
             tp1 = close + risk * 1.0  # Pure 1:1 TP1
-            tp2 = close + risk * (tp_mult / sl_mult)
-            tp3 = close + risk * 4.0
+            tp2 = close + risk * 2.0  # 1:2.0 Runner Target
+            tp3 = close + risk * 3.5  # 1:3.5 Max Extension
             entry = close
             order_type = "MARKET"
         tp = tp1
@@ -710,15 +710,15 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
                 limit_entry = close + (sl - close) * 0.3
             risk = max(sl - limit_entry, min_risk_dist)
             tp1 = limit_entry - risk * 1.0  # Pure 1:1 TP1
-            tp2 = limit_entry - risk * (tp_mult / sl_mult)
-            tp3 = limit_entry - risk * 4.0
+            tp2 = limit_entry - risk * 2.0  # 1:2.0 Runner Target
+            tp3 = limit_entry - risk * 3.5  # 1:3.5 Max Extension
             entry = limit_entry
             order_type = "LIMIT"
         else:
             risk = sl - close
             tp1 = close - risk * 1.0  # Pure 1:1 TP1
-            tp2 = close - risk * (tp_mult / sl_mult)
-            tp3 = close - risk * 4.0
+            tp2 = close - risk * 2.0  # 1:2.0 Runner Target
+            tp3 = close - risk * 3.5  # 1:3.5 Max Extension
             entry = close
             order_type = "MARKET"
         tp = tp1
@@ -1332,3 +1332,19 @@ def analyze_setup(
 
     # Route 2: Dedicated Institutional Forex Engine (ICT Sweeps, FVG, Sessions)
     return _analyze_forex_setup(symbol, data, bias, min_confidence=min_confidence, session_key=session_key)
+
+
+def compute_trade_levels(symbol: str, action: str, prices: pd.DataFrame) -> SignalReport:
+    """
+    Computes exact structural Entry, Stop Loss, and 1:1 TP1 for a requested BUY/SELL action,
+    even if a re-scan moments later returned WAIT or a different direction.
+    """
+    clean_act = "BUY" if str(action).upper() in ("BUY", "LONG") else "SELL"
+    data = compute_indicators(prices) if "atr" not in prices.columns else prices
+    last = data.iloc[-1]
+    close = float(last["close"])
+    atr_val = float(last["atr"]) if "atr" in last and pd.notna(last["atr"]) and float(last["atr"]) > 0 else close * 0.005
+    if symbol in CRYPTO_SYMBOLS:
+        return _make_report(symbol, clean_act, 75, "Directional", close, atr_val, "Direct execution", data=data)
+    return _build_forex_report(symbol, clean_act, 75, "Directional", close, atr_val, "Direct execution", data, "Active")
+

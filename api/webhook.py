@@ -157,15 +157,7 @@ class handler(BaseHTTPRequestHandler):
             return
 
         if "cron" in self.path:
-            # 1. Process any due scheduled broadcasts
-            executed_broadcasts = []
-            try:
-                from bot.access_control import process_due_broadcasts
-                executed_broadcasts = process_due_broadcasts()
-            except Exception as exc:
-                print(f"[Cron Broadcast] Error: {exc}")
-
-            # 2. Check open paper trades (trigger TP1/SL closures and deliver to owning users)
+            # 1. Check open paper trades FIRST (trigger TP1/SL closures and deliver to owning users)
             paper_trade_alerts = []
             try:
                 from bot.paper_engine import check_open_trades
@@ -173,21 +165,37 @@ class handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 print(f"[Cron PaperTrade] Error: {exc}")
 
-            # 3. Run autopilot symbol scans
+            # 2. Process any due scheduled broadcasts
+            executed_broadcasts = []
+            try:
+                from bot.access_control import process_due_broadcasts
+                executed_broadcasts = process_due_broadcasts()
+            except Exception as exc:
+                print(f"[Cron Broadcast] Error: {exc}")
+
+            # 3. Run autopilot symbol scans in parallel unless mode=trades is specified
             alerts = []
-            for symbol in ALL_WATCHLIST:
-                try:
-                    if autopilot and autopilot.scan_single_symbol(symbol):
-                        alerts.append(symbol)
-                except Exception as exc:
-                    print(f"[Cron Scan] Error on {symbol}: {exc}")
+            if "mode=trades" not in self.path and autopilot:
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                    future_to_sym = {
+                        executor.submit(autopilot.scan_single_symbol, symbol): symbol
+                        for symbol in ALL_WATCHLIST
+                    }
+                    for future in concurrent.futures.as_completed(future_to_sym):
+                        symbol = future_to_sym[future]
+                        try:
+                            if future.result():
+                                alerts.append(symbol)
+                        except Exception as exc:
+                            print(f"[Cron Scan] Error on {symbol}: {exc}")
 
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({
                 "status": "success",
-                "symbols_scanned": len(ALL_WATCHLIST),
+                "symbols_scanned": 0 if "mode=trades" in self.path else len(ALL_WATCHLIST),
                 "alerts_triggered": alerts,
                 "paper_trade_alerts": len(paper_trade_alerts),
                 "broadcasts_executed": executed_broadcasts,

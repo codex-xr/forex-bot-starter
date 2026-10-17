@@ -41,7 +41,7 @@ from bot.paper_engine import (
     reset_paper_account,
 )
 from bot.session_bot import build_session_scan, build_session_message, ALL_WATCHLIST
-from bot.signal_engine import analyze_setup
+from bot.signal_engine import analyze_setup, compute_trade_levels
 from bot.symbols import DISPLAY_NAMES, normalize_symbol
 from bot.telegram import send_telegram_message, telegram_request
 
@@ -277,10 +277,13 @@ def handle_callback_query(callback_query: dict) -> None:
             try:
                 candles = fetch_live_candles(symbol)
                 report = analyze_setup(symbol, candles, min_confidence=60)
+                if report.action != action or not report.stop_loss or not (report.tp1 or report.take_profit):
+                    report = compute_trade_levels(symbol, action, candles)
                 curr_close = float(candles.iloc[-1]["close"])
                 entry = report.entry or curr_close
-                sl = report.stop_loss or (entry * 0.98 if action == "BUY" else entry * 1.02)
-                tp1 = report.tp1 or report.take_profit or (entry * 1.03 if action == "BUY" else entry * 0.97)
+                sl = report.stop_loss or (entry * 0.985 if action == "BUY" else entry * 1.015)
+                risk_dist = abs(entry - sl)
+                tp1 = report.tp1 or report.take_profit or (entry + risk_dist if action == "BUY" else entry - risk_dist)
                 order_type = getattr(report, "order_type", "MARKET")
                 ok, enter_msg, _ = open_paper_trade(
                     symbol, action, entry, sl, tp1, user_id=chat_id,
@@ -818,10 +821,13 @@ def handle_message(message: dict) -> None:
                 candles = fetch_live_candles(target_sym)
                 report = analyze_setup(target_sym, candles, min_confidence=60)
                 action = "BUY" if report.action in ("BUY", "LONG") else ("SELL" if report.action in ("SELL", "SHORT") else "BUY")
-                curr_price = float(candles.iloc[-1]["close"])
-                entry = report.entry or curr_price
-                sl = report.stop_loss or (entry * 0.98 if action == "BUY" else entry * 1.02)
-                tp1 = report.tp1 or report.take_profit or (entry * 1.03 if action == "BUY" else entry * 0.97)
+                if report.action != action or not report.stop_loss or not (report.tp1 or report.take_profit):
+                    report = compute_trade_levels(target_sym, action, candles)
+                curr_close = float(candles.iloc[-1]["close"])
+                entry = report.entry or curr_close
+                sl = report.stop_loss or (entry * 0.985 if action == "BUY" else entry * 1.015)
+                risk_dist = abs(entry - sl)
+                tp1 = report.tp1 or report.take_profit or (entry + risk_dist if action == "BUY" else entry - risk_dist)
                 order_type = getattr(report, "order_type", "MARKET")
                 ok, enter_msg, _ = open_paper_trade(
                     target_sym, action, entry, sl, tp1, user_id=chat_id,
@@ -857,6 +863,10 @@ def handle_message(message: dict) -> None:
 
         if command in COMMANDS:
             send_telegram_message("Scanning market. One moment...", chat_id=chat_id)
+            try:
+                check_open_trades(user_id=chat_id)
+            except Exception:
+                pass
             message_text, setups = build_session_scan(COMMANDS[command], min_confidence=65)
             reply_markup = None
             if setups:

@@ -91,6 +91,12 @@ class AutoPilot:
     def run_loop(self) -> None:
         print("[AutoPilot] Engine started. Scanning watchlists in background...")
         while not self._stop_event.is_set():
+            try:
+                from bot.paper_engine import check_open_trades
+                check_open_trades()
+            except Exception as exc:
+                print(f"[AutoPilot] Error checking open trades: {exc}")
+
             if not self.is_active:
                 time.sleep(5)
                 continue

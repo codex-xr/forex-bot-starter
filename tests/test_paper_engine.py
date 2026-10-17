@@ -630,4 +630,34 @@ class TestPendingLimitOrders:
         assert "AVAX" in call_msg
         assert "Paper Trade Entered" in call_msg
 
+    def test_offline_multi_candle_tp1_hit_caught(self):
+        import time
+        user = "offline_user"
+        ok, _, pos = open_paper_trade("SOL_USD", "BUY", 100.0, 98.0, 102.0, user_id=user)
+        assert ok is True
+
+        # Backdate entry_ts by 45 minutes so 3 candles happened while user was offline
+        store = _load_paper_store()
+        now_ts = time.time()
+        entry_ts = now_ts - 2700
+        store.get_user_state(user).positions[pos["id"]].entry_ts = entry_ts
+        _save_paper_store(store)
+
+        t0 = pd.to_datetime(entry_ts, unit="s", utc=True).floor("15min")
+        # Candle 1: normal, Candle 2: hits TP1 (102.5) while user is offline, Candle 3 (latest): pulls back to 99.0!
+        mock_df = pd.DataFrame([
+            {"time": t0, "open": 100.0, "high": 100.8, "low": 99.5, "close": 100.5},
+            {"time": t0 + pd.Timedelta(minutes=15), "open": 100.5, "high": 102.6, "low": 100.2, "close": 101.0},
+            {"time": t0 + pd.Timedelta(minutes=30), "open": 101.0, "high": 101.0, "low": 98.8, "close": 99.0},
+        ])
+
+        with patch("bot.paper_engine.fetch_live_candles", return_value=mock_df):
+            alerts = check_open_trades(user_id=user)
+
+        assert any("Take Profit 1 Reached" in a for a in alerts)
+        store = _load_paper_store()
+        assert pos["id"] not in store.get_user_state(user).positions
+        assert store.get_user_state(user).history[-1].exit_reason == "TP1_HIT"
+
+
 
