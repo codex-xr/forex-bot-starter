@@ -1,5 +1,4 @@
 SYMBOL_ALIASES = {
-    "US30": "DIA",
     "WIF_USD": "WIF/USDT",
     "BONK_USD": "BONK/USDT",
     "FLOKI_USD": "FLOKI/USDT",
@@ -46,23 +45,6 @@ DEX_POOLS = {
 }
 
 DISPLAY_NAMES = {
-    # Forex Majors & Crosses
-    "EUR_USD": "EURUSD",
-    "GBP_USD": "GBPUSD",
-    "USD_JPY": "USDJPY",
-    "USD_CHF": "USDCHF",
-    "AUD_USD": "AUDUSD",
-    "USD_CAD": "USDCAD",
-    "NZD_USD": "NZDUSD",
-    "EUR_GBP": "EURGBP",
-    "EUR_JPY": "EURJPY",
-    "GBP_JPY": "GBPJPY",
-    "GBP_NZD": "GBPNZD",
-    "USD_ZAR": "USDZAR",
-    "USD_TRY": "USDTRY",
-    # Commodities & Indices
-    "XAU_USD": "XAUUSD",
-    "US30": "US30",
     # Major Cryptos (/c1)
     "BTC_USD": "BTCUSD",
     "ETH_USD": "ETHUSD",
@@ -95,21 +77,6 @@ DISPLAY_NAMES = {
 }
 
 PIP_VALUES = {
-    "EUR_USD": 0.0001,
-    "GBP_USD": 0.0001,
-    "USD_JPY": 0.01,
-    "USD_CHF": 0.0001,
-    "AUD_USD": 0.0001,
-    "USD_CAD": 0.0001,
-    "NZD_USD": 0.0001,
-    "EUR_GBP": 0.0001,
-    "EUR_JPY": 0.01,
-    "GBP_JPY": 0.01,
-    "GBP_NZD": 0.0001,
-    "USD_ZAR": 0.0001,
-    "USD_TRY": 0.0001,
-    "XAU_USD": 0.1,
-    "US30": 1.0,
     # Cryptos
     "BTC_USD": 1.0,
     "ETH_USD": 1.0,
@@ -140,8 +107,8 @@ PIP_VALUES = {
 
 def normalize_symbol(symbol: str) -> str:
     """
-    Normalizes any user or UI symbol variant (e.g. 'FLOKIUSD', 'FLOKI', 'floki_usd', 'EUR/USD')
-    to the canonical system symbol (e.g. 'FLOKI_USD', 'EUR_USD').
+    Normalizes any user or UI symbol variant (e.g. 'FLOKIUSD', 'FLOKI', 'floki_usd', 'BTC/USD')
+    to the canonical system symbol (e.g. 'FLOKI_USD', 'BTC_USD').
     """
     if not symbol:
         return ""
@@ -163,10 +130,11 @@ def normalize_symbol(symbol: str) -> str:
             return canonical
 
     # 4. Fallback if ends without _USD
-    if not clean.endswith("_USD") and not clean.endswith("_USDT") and clean != "US30":
+    if not clean.endswith("_USD") and not clean.endswith("_USDT"):
         trial = f"{clean}_USD"
         if trial in DISPLAY_NAMES:
             return trial
 
     return clean
+
 

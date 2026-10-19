@@ -56,10 +56,17 @@ class handler(BaseHTTPRequestHandler):
             update = json.loads(post_data.decode("utf-8"))
             if update.get("action") == "check_trades":
                 from bot.paper_engine import check_open_trades
+                from bot.poly_paper_engine import check_open_poly_trades
                 from bot.access_control import process_due_broadcasts
                 alerts = check_open_trades()
+                poly_alerts = check_open_poly_trades()
                 bcasts = process_due_broadcasts()
-                resp_payload = {"ok": True, "paper_trade_alerts": len(alerts), "broadcasts_executed": bcasts}
+                resp_payload = {
+                    "ok": True,
+                    "paper_trade_alerts": len(alerts),
+                    "poly_trade_alerts": len(poly_alerts),
+                    "broadcasts_executed": bcasts,
+                }
             elif "callback_query" in update:
                 cb = update["callback_query"]
                 qid = cb.get("id")
@@ -165,11 +172,17 @@ class handler(BaseHTTPRequestHandler):
         if "cron" in self.path:
             # 1. Check open paper trades FIRST (trigger TP1/SL closures and deliver to owning users)
             paper_trade_alerts = []
+            poly_trade_alerts = []
             try:
                 from bot.paper_engine import check_open_trades
                 paper_trade_alerts = check_open_trades()
             except Exception as exc:
                 print(f"[Cron PaperTrade] Error: {exc}")
+            try:
+                from bot.poly_paper_engine import check_open_poly_trades
+                poly_trade_alerts = check_open_poly_trades()
+            except Exception as exc:
+                print(f"[Cron PolyTrade] Error: {exc}")
 
             # 2. Process any due scheduled broadcasts
             executed_broadcasts = []
@@ -204,6 +217,7 @@ class handler(BaseHTTPRequestHandler):
                 "symbols_scanned": 0 if "mode=trades" in self.path else len(ALL_WATCHLIST),
                 "alerts_triggered": alerts,
                 "paper_trade_alerts": len(paper_trade_alerts),
+                "poly_trade_alerts": len(poly_trade_alerts),
                 "broadcasts_executed": executed_broadcasts,
             }, indent=2).encode("utf-8"))
             return

@@ -93,7 +93,9 @@ class AutoPilot:
         while not self._stop_event.is_set():
             try:
                 from bot.paper_engine import check_open_trades
+                from bot.poly_paper_engine import check_open_poly_trades
                 check_open_trades()
+                check_open_poly_trades()
             except Exception as exc:
                 print(f"[AutoPilot] Error checking open trades: {exc}")
 

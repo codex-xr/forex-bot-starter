@@ -18,8 +18,6 @@ class MarketSession:
 
 
 SESSIONS = {
-    "f1": MarketSession("Forex Batch 1 (/f1)", "Majors (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD)"),
-    "f2": MarketSession("Forex Batch 2 (/f2)", "Crosses & Commodities (NZDUSD, EURGBP, EURJPY, GBPJPY, Gold, US30)"),
     "c1": MarketSession("Major Cryptos (/c1)", "BTC, ETH, SOL, XRP, DOGE, ADA"),
     "c2": MarketSession("High-Momentum Altcoins (/c2)", "BNB, AVAX, LINK, SUI, NEAR, LTC"),
     "m1": MarketSession("Top Memecoins (/m1)", "WIF, PEPE, SHIB, BONK, FLOKI, BRETT, ANSEM"),
@@ -27,22 +25,6 @@ SESSIONS = {
 }
 
 SESSION_WATCHLISTS = {
-    "f1": [
-        "EUR_USD",
-        "GBP_USD",
-        "USD_JPY",
-        "USD_CHF",
-        "AUD_USD",
-        "USD_CAD",
-    ],
-    "f2": [
-        "NZD_USD",
-        "EUR_GBP",
-        "EUR_JPY",
-        "GBP_JPY",
-        "XAU_USD",
-        "US30",
-    ],
     "c1": [
         "BTC_USD",
         "ETH_USD",

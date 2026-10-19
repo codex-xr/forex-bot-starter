@@ -123,6 +123,8 @@ def _load_store(force: bool = False) -> dict:
 def _save_store() -> None:
     global _STORE, _LAST_SYNC_TS
     _LAST_SYNC_TS = time.time()
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return
     # 1. Save locally
     try:
         path = _get_store_path()
@@ -132,8 +134,7 @@ def _save_store() -> None:
         print(f"[AccessControl] Error saving store: {exc}")
 
     # 2. Save to cloud
-    if not os.getenv("PYTEST_CURRENT_TEST"):
-        _save_to_cloud(_STORE)
+    _save_to_cloud(_STORE)
 
 
 try:
@@ -189,23 +190,66 @@ def parse_duration(duration_str: str) -> tuple[int | None, str]:
     return 30, "30 Days"
 
 
-def generate_key(duration_str: str = "30d", note: str = "") -> tuple[str, str]:
+TIER_LABELS = {
+    "crypto": "📈 Crypto & Memecoins Only",
+    "poly": "🔮 Polymarket Predictions Only",
+    "both": "👑 All-Access Bundle (Crypto + Predictions)",
+}
+
+
+def normalize_access_tier(tier_str: str | None) -> str:
+    if not tier_str:
+        return "crypto"
+    s = _clean_target(str(tier_str)).lower()
+    if s in ("poly", "polymarket", "predict", "prediction", "predictions", "p"):
+        return "poly"
+    if s in ("both", "all", "bundle", "full", "vip_all", "b"):
+        return "both"
+    return "crypto"
+
+
+def format_tier_label(tier_str: str | None) -> str:
+    t = normalize_access_tier(tier_str)
+    return TIER_LABELS.get(t, TIER_LABELS["crypto"])
+
+
+def generate_key(duration_str: str = "30d", note: str = "", access_tier: str | None = None) -> tuple[str, str]:
     """
     Generates a unique VIP key and saves it to the store.
+    Supports 3 tiers: 'crypto' (default), 'poly', and 'both'.
+    If `access_tier` is not explicitly passed, checks if the first word of `note` is a tier keyword.
     Returns (key_code, duration_label).
     """
     _load_store()
     days, label = parse_duration(duration_str)
+
+    resolved_tier = "crypto"
+    clean_note = note.strip() if note else ""
+    if access_tier:
+        resolved_tier = normalize_access_tier(access_tier)
+    elif clean_note:
+        first_word = clean_note.split()[0].lower()
+        if first_word in ("crypto", "poly", "polymarket", "predict", "prediction", "predictions", "both", "all", "bundle"):
+            resolved_tier = normalize_access_tier(first_word)
+            clean_note = " ".join(clean_note.split()[1:]).strip()
+
     random_part = secrets.token_hex(3).upper()
     dur_tag = f"{days}D" if days else "LIFE"
-    key_code = f"VIP-{random_part}-{dur_tag}"
+    tier_tag = ""
+    if resolved_tier == "poly":
+        tier_tag = "POLY-"
+    elif resolved_tier == "both":
+        tier_tag = "BOTH-"
+
+    key_code = f"VIP-{tier_tag}{random_part}-{dur_tag}"
 
     _STORE["keys"][key_code] = {
         "key": key_code,
         "days": days,
         "label": label,
+        "access_tier": resolved_tier,
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-        "note": note,
+        "note": clean_note,
         "status": "unused",
         "used_by": None,
         "used_at": None,
@@ -216,7 +260,7 @@ def generate_key(duration_str: str = "30d", note: str = "") -> tuple[str, str]:
 
 def redeem_key(chat_id: int | str, user_info: dict, key_code: str) -> tuple[bool, str]:
     """
-    Redeems a VIP key for a given user.
+    Redeems a VIP key for a given user and sets/upgrades their access_tier ('crypto', 'poly', or 'both').
     """
     _load_store()
     chat_id_str = _clean_target(str(chat_id))
@@ -236,12 +280,29 @@ def redeem_key(chat_id: int | str, user_info: dict, key_code: str) -> tuple[bool
 
     now = datetime.now(timezone.utc)
     days = key_data["days"]
+    new_tier = normalize_access_tier(key_data.get("access_tier", "crypto"))
+
+    # Check if user already has an active subscription on the OTHER tier -> auto-upgrade to 'both'!
+    is_currently_active = False
+    if existing and existing.get("status") == "active":
+        exp_ts = existing.get("expires_ts")
+        if exp_ts is None or exp_ts > time.time():
+            is_currently_active = True
+
+    if is_currently_active:
+        old_tier = normalize_access_tier(existing.get("access_tier", "crypto"))
+        if old_tier != new_tier:
+            final_tier = "both"
+        else:
+            final_tier = new_tier
+    else:
+        final_tier = new_tier
 
     if days is None:
         expires_at_str = "Never (Lifetime)"
         expires_ts = None
     else:
-        if existing and existing.get("status") == "active" and existing.get("expires_ts"):
+        if is_currently_active and existing and existing.get("expires_ts"):
             current_exp = datetime.fromtimestamp(existing["expires_ts"], tz=timezone.utc)
             base_date = max(now, current_exp)
         else:
@@ -262,6 +323,7 @@ def redeem_key(chat_id: int | str, user_info: dict, key_code: str) -> tuple[bool
         "username": user_info.get("username", existing.get("username", "Unknown") if existing else "Unknown"),
         "first_name": user_info.get("first_name", existing.get("first_name", "User") if existing else "User"),
         "plan_label": key_data["label"],
+        "access_tier": final_tier,
         "activated_at": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
         "expires_at": expires_at_str,
         "expires_ts": expires_ts,
@@ -271,13 +333,45 @@ def redeem_key(chat_id: int | str, user_info: dict, key_code: str) -> tuple[bool
     }
     _save_store()
 
-    return True, f"🎉 <b>Access Activated Successfully!</b>\n\n• <b>Plan:</b> {html.escape(key_data['label'])}\n• <b>Expires:</b> <code>{html.escape(expires_at_str)}</code>\n\nYou now have full access to all Forex, Crypto & Memecoin signals! Type /help to begin."
+    tier_display = format_tier_label(final_tier)
+    return True, (
+        f"🎉 <b>Access Activated Successfully!</b>\n\n"
+        f"• <b>Package:</b> <b>{html.escape(tier_display)}</b>\n"
+        f"• <b>Duration:</b> {html.escape(key_data['label'])}\n"
+        f"• <b>Expires:</b> <code>{html.escape(expires_at_str)}</code>\n\n"
+        f"Type <code>/menu</code> to open your interactive dashboard!"
+    )
 
 
-def is_user_authorized(chat_id: int | str, user_info: dict | None = None) -> tuple[bool, str]:
+def get_user_access_tier(chat_id: int | str) -> str:
+    """
+    Returns the active access tier for a user: 'both', 'crypto', 'poly', or 'none'.
+    Existing subscribers without an explicit 'access_tier' field default to 'crypto'.
+    Master Admin always receives 'both'.
+    """
+    clean_id = _clean_target(str(chat_id))
+    if is_admin(clean_id):
+        return "both"
+    _load_store()
+    user = _STORE["users"].get(clean_id)
+    if not user or user.get("status") != "active":
+        return "none"
+    exp_ts = user.get("expires_ts")
+    if exp_ts is not None and time.time() > exp_ts:
+        return "none"
+    return normalize_access_tier(user.get("access_tier", "crypto"))
+
+
+def is_user_authorized(
+    chat_id: int | str,
+    user_info: dict | None = None,
+    required_tier: str | None = None,
+) -> tuple[bool, str]:
     """
     Checks if a user is authorized to use the bot and automatically
     logs ALL visitors into the user database for tracking.
+    If `required_tier` ('crypto' or 'poly') is specified, also verifies that the user's
+    subscription includes that specific engine ('both' unlocks both engines).
     """
     clean_id = _clean_target(str(chat_id))
     from_id = _clean_target(str(user_info.get("id"))) if user_info and user_info.get("id") else ""
@@ -296,6 +390,7 @@ def is_user_authorized(chat_id: int | str, user_info: dict | None = None) -> tup
             "username": user_info.get("username", "Unknown") if user_info else "Unknown",
             "first_name": user_info.get("first_name", "Visitor") if user_info else "Visitor",
             "plan_label": "No Key (Pending)",
+            "access_tier": "none",
             "activated_at": now_str,
             "expires_at": "N/A",
             "expires_ts": None,
@@ -327,6 +422,12 @@ def is_user_authorized(chat_id: int | str, user_info: dict | None = None) -> tup
             _save_store()
             return False, "expired"
 
+    if required_tier:
+        req = normalize_access_tier(required_tier)
+        user_tier = normalize_access_tier(user.get("access_tier", "crypto"))
+        if user_tier != "both" and user_tier != req:
+            return False, f"tier_locked:{user_tier}"
+
     return True, "active"
 
 
@@ -355,6 +456,7 @@ def revoke_user(target: str) -> tuple[bool, str]:
             "username": target_clean if not target_clean.isdigit() else "Unknown",
             "first_name": "Revoked User",
             "plan_label": "Revoked",
+            "access_tier": "none",
             "activated_at": now_str,
             "expires_at": "Revoked",
             "expires_ts": None,
@@ -415,9 +517,15 @@ def unban_user(target: str) -> tuple[bool, str]:
     return True, f"✅ Access for <b>{safe_name}</b> (ID: <code>{safe_id}</code>) has been <b>RESTORED</b>.\n• {status_msg}"
 
 
-def grant_user(target: str, duration_str: str = "30d", admin_note: str = "Admin Grant") -> tuple[bool, str]:
+def grant_user(
+    target: str,
+    duration_str: str = "30d",
+    admin_note: str = "Admin Grant",
+    access_tier: str = "crypto",
+) -> tuple[bool, str]:
     """
     Directly grants or extends access for a user without needing a key.
+    Supports access_tier: 'crypto' (default), 'poly', or 'both'.
     """
     _load_store()
     target_clean = _clean_target(target)
@@ -426,6 +534,7 @@ def grant_user(target: str, duration_str: str = "30d", admin_note: str = "Admin 
         return False, "Please specify a valid user ID or username."
 
     days, label = parse_duration(duration_str)
+    resolved_tier = normalize_access_tier(access_tier)
 
     now = datetime.now(timezone.utc)
     if days is None:
@@ -451,6 +560,7 @@ def grant_user(target: str, duration_str: str = "30d", admin_note: str = "Admin 
         "username": _STORE["users"].get(found_id, {}).get("username", "Unknown"),
         "first_name": _STORE["users"].get(found_id, {}).get("first_name", "Granted User"),
         "plan_label": label,
+        "access_tier": resolved_tier,
         "activated_at": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
         "expires_at": expires_at_str,
         "expires_ts": expires_ts,
@@ -461,8 +571,9 @@ def grant_user(target: str, duration_str: str = "30d", admin_note: str = "Admin 
     _save_store()
     safe_id = html.escape(str(found_id))
     safe_label = html.escape(str(label))
+    safe_tier = html.escape(format_tier_label(resolved_tier))
     safe_exp = html.escape(str(expires_at_str))
-    return True, f"✅ Access granted to ID <code>{safe_id}</code> ({safe_label}, expires: <code>{safe_exp}</code>)."
+    return True, f"✅ Access granted to ID <code>{safe_id}</code> ({safe_label} — <b>{safe_tier}</b>, expires: <code>{safe_exp}</code>)."
 
 
 def list_users_report() -> str:
@@ -509,10 +620,11 @@ def list_users_report() -> str:
             raw_name = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
             safe_name = html.escape(str(raw_name))
             safe_id = html.escape(str(cid))
-            safe_plan = html.escape(str(u.get('plan_label', 'VIP')))
-            safe_exp = html.escape(str(u.get('expires_at', 'N/A')))
-            safe_last = html.escape(str(u.get('last_active', 'N/A')))
-            lines.append(f"• <b>{safe_name}</b> (<code>{safe_id}</code>) — {safe_plan}")
+            safe_plan = html.escape(str(u.get("plan_label", "VIP")))
+            tier_tag = normalize_access_tier(u.get("access_tier", "crypto")).upper()
+            safe_exp = html.escape(str(u.get("expires_at", "N/A")))
+            safe_last = html.escape(str(u.get("last_active", "N/A")))
+            lines.append(f"• <b>{safe_name}</b> (<code>{safe_id}</code>) — {safe_plan} [<b>{tier_tag}</b>]")
             lines.append(f"  Expires: <code>{safe_exp}</code> | Seen: {safe_last}")
         lines.append("")
 
@@ -522,7 +634,7 @@ def list_users_report() -> str:
             raw_name = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
             safe_name = html.escape(str(raw_name))
             safe_id = html.escape(str(cid))
-            safe_last = html.escape(str(u.get('last_active', 'N/A')))
+            safe_last = html.escape(str(u.get("last_active", "N/A")))
             lines.append(f"• <b>{safe_name}</b> (ID: <code>{safe_id}</code>) — Last seen: {safe_last}")
         lines.append("")
 
@@ -532,7 +644,7 @@ def list_users_report() -> str:
             raw_name = f"@{u.get('username')}" if u.get("username") and u.get("username") != "Unknown" else u.get("first_name", "User")
             safe_name = html.escape(str(raw_name))
             safe_id = html.escape(str(cid))
-            safe_exp = html.escape(str(u.get('expires_at', 'N/A')))
+            safe_exp = html.escape(str(u.get("expires_at", "N/A")))
             lines.append(f"• <b>{safe_name}</b> (<code>{safe_id}</code>) — Expired: {safe_exp}")
         lines.append("")
 
@@ -547,7 +659,9 @@ def list_users_report() -> str:
 
     lines.append("<b>Admin Quick Actions:</b>")
     lines.append("• Terminate user: <code>/revoke 123456789</code>")
-    lines.append("• Grant access: <code>/grant 123456789 30d</code>")
+    lines.append("• Grant Crypto: <code>/grant 123456789 30d crypto</code>")
+    lines.append("• Grant Predictions: <code>/grant 123456789 30d poly</code>")
+    lines.append("• Grant Both: <code>/grant 123456789 30d both</code>")
 
     return "\n".join(lines).strip()
 
@@ -559,7 +673,7 @@ def list_keys_report() -> str:
     _load_store()
     keys = _STORE["keys"]
     if not keys:
-        return "🔑 <b>VIP Activation Keys:</b>\n\n<i>No keys generated yet. Use <code>/genkey &lt;duration&gt;</code> to create one.</i>"
+        return "🔑 <b>VIP Activation Keys:</b>\n\n<i>No keys generated yet. Use <code>/genkey &lt;duration&gt; [crypto|poly|both]</code> to create one.</i>"
 
     unused = [k for k in keys.values() if k.get("status") == "unused"]
     redeemed = [k for k in keys.values() if k.get("status") == "redeemed"]
@@ -574,14 +688,16 @@ def list_keys_report() -> str:
     if unused:
         lines.append("<b>Available Keys (Ready to distribute):</b>")
         for k in unused[-10:]:
+            tier_tag = normalize_access_tier(k.get("access_tier", "crypto")).upper()
             note_str = f" ({html.escape(k['note'])})" if k.get("note") else ""
-            lines.append(f"• <code>{html.escape(k['key'])}</code> — <b>{html.escape(k['label'])}</b>{note_str}")
+            lines.append(f"• <code>{html.escape(k['key'])}</code> — <b>{html.escape(k['label'])}</b> [<b>{tier_tag}</b>]{note_str}")
         lines.append("")
 
     if redeemed:
         lines.append("<b>Recently Redeemed:</b>")
         for k in redeemed[-5:]:
-            lines.append(f"• <code>{html.escape(k['key'])}</code> — Used by <code>{html.escape(str(k.get('used_by')))}</code> on {html.escape(str(k.get('used_at')))}")
+            tier_tag = normalize_access_tier(k.get("access_tier", "crypto")).upper()
+            lines.append(f"• <code>{html.escape(k['key'])}</code> [{tier_tag}] — Used by <code>{html.escape(str(k.get('used_by')))}</code> on {html.escape(str(k.get('used_at')))}")
 
     return "\n".join(lines).strip()
 
@@ -594,7 +710,7 @@ def get_user_plan_report(chat_id: int | str) -> str:
     if is_admin(clean_id):
         return (
             "👑 <b>Account Status: Master Administrator</b>\n\n"
-            "• <b>Privilege:</b> Permanent Full Access\n"
+            "• <b>Privilege:</b> Permanent Full Access (Crypto + Polymarket Predictions)\n"
             "• <b>Admin Controls:</b> <code>/genkey</code>, <code>/users</code>, <code>/revoke</code>, <code>/unban</code>, <code>/grant</code>, <code>/keys</code>, <code>/broadcast</code>, <code>/schedule</code>, <code>/schedules</code>"
         )
 
@@ -628,12 +744,14 @@ def get_user_plan_report(chat_id: int | str) -> str:
             "Activate your account with: <code>/redeem &lt;YOUR_KEY&gt;</code>"
         )
 
+    tier_display = format_tier_label(user.get("access_tier", "crypto"))
     return (
         f"✅ <b>VIP Account Active</b>\n\n"
+        f"• <b>Package:</b> <b>{html.escape(tier_display)}</b>\n"
         f"• <b>Plan:</b> {html.escape(str(user.get('plan_label')))}\n"
         f"• <b>Expires on:</b> <code>{html.escape(str(user.get('expires_at')))}</code>\n"
         f"• <b>Key Code:</b> <code>{html.escape(str(user.get('key_used')))}</code>\n\n"
-        f"You have full access to all Forex, Crypto & Memecoin signals!"
+        f"Type <code>/menu</code> to open your interactive signal menus!"
     )
 
 

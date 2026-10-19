@@ -79,45 +79,10 @@ def fetch_live_candles(symbol: str, interval: str = "15min", outputsize: int = 2
         except Exception as b_err:
             print(f"[MarketData] Binance fetch fallback for {symbol}: {b_err}")
 
-    # 3. Twelve Data / Fallback for Forex & Commodities
-    load_dotenv()
-
-    api_key = os.getenv("TWELVE_DATA_API_KEY")
+    # 3. Local CSV Fallback (for backtests / offline tests)
     fallback = Path("data") / f"{symbol.lower()}.csv"
-    if not api_key:
-        if fallback.exists():
-            return load_price_data(fallback)
-        raise RuntimeError("TWELVE_DATA_API_KEY is missing and no fallback CSV exists")
-
-    api_symbol = SYMBOL_ALIASES.get(symbol, symbol.replace("_", "/"))
-
-    try:
-        response = requests.get(
-            "https://api.twelvedata.com/time_series",
-            params={
-                "symbol": api_symbol,
-                "interval": interval,
-                "outputsize": outputsize,
-                "apikey": api_key,
-            },
-            timeout=3.5,
-        )
-
-        if response.status_code == 200:
-            payload = response.json()
-            if "values" in payload and payload["values"]:
-                data = pd.DataFrame(payload["values"])
-                data = data.rename(columns={"datetime": "time"})
-                data["time"] = pd.to_datetime(data["time"], utc=True)
-
-                for column in ["open", "high", "low", "close"]:
-                    data[column] = pd.to_numeric(data[column], errors="coerce")
-
-                return data[["time", "open", "high", "low", "close"]].dropna().sort_values("time").reset_index(drop=True)
-    except Exception as td_err:
-        print(f"[MarketData] TwelveData error for {symbol}: {td_err}")
-
     if fallback.exists():
         return load_price_data(fallback)
 
     raise RuntimeError(f"Real-time data temporarily unavailable for {symbol}")
+

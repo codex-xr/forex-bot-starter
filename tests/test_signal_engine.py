@@ -15,11 +15,6 @@ from bot.signal_engine import (
     _fallback_scoring,
     _quality_gate,
     _crypto_momentum_surge,
-    _forex_ict_liquidity_sweep,
-    _forex_fvg_retest,
-    _forex_london_ny_displacement,
-    _forex_htf_trend_pullback,
-    _forex_structural_sl_tp,
     analyze_setup,
 )
 
@@ -170,36 +165,6 @@ class TestSMC_Sweep:
         assert sig.action == "HOLD"
 
 
-class TestForexStrategies:
-    def test_forex_ict_sweep(self):
-        c = [1.0] * 100
-        data = compute_indicators(_ohcv_close(c))
-        sig = _forex_ict_liquidity_sweep(data, "EUR_USD")
-        assert sig.action in ("BUY", "SELL", "HOLD")
-        assert sig.name == "ICT Liquidity Sweep (MSS)"
-
-    def test_forex_fvg_retest(self):
-        c = [1.0] * 100
-        data = compute_indicators(_ohcv_close(c))
-        sig = _forex_fvg_retest(data, "EUR_USD")
-        assert sig.action in ("BUY", "SELL", "HOLD")
-        assert sig.name == "Fair Value Gap (FVG)"
-
-    def test_forex_displacement(self):
-        c = [1.0] * 100
-        data = compute_indicators(_ohcv_close(c))
-        sig = _forex_london_ny_displacement(data, session_key="london", symbol="EUR_USD")
-        assert sig.action in ("BUY", "SELL", "HOLD")
-        assert sig.name == "London/NY Displacement"
-
-    def test_forex_structural_sl_tp(self):
-        data = compute_indicators(_ohcv_close([1.1000] * 100))
-        sl, tp1, tp2, tp3 = _forex_structural_sl_tp("EUR_USD", "BUY", 1.1000, 0.0010, data)
-        assert sl < 1.1000
-        assert tp1 > 1.1000
-        assert tp2 > tp1
-        assert tp3 > tp2
-
 
 class TestMeanReversion:
     def test_high_adx_returns_hold(self):
@@ -294,23 +259,22 @@ class TestQualityGate:
 class TestAnalyzeSetup:
     def test_not_enough_candles(self):
         prices = _ohcv_close([1.0] * 50)
-        report = analyze_setup("EUR_USD", prices)
+        report = analyze_setup("BTC_USD", prices)
         assert report.action == "WAIT"
         assert "Not enough candle data" in report.reason
 
     def test_sufficient_candles_returns_report(self):
         prices = _ohcv_close([1.0] * 100)
-        report = analyze_setup("EUR_USD", prices)
+        report = analyze_setup("BTC_USD", prices)
         assert isinstance(report, SignalReport)
         assert report.action in ("BUY", "SELL", "WAIT")
         assert 0 <= report.confidence <= 95
 
     def test_display_symbol_used(self):
         prices = _ohcv_close([1.0] * 100)
-        report = analyze_setup("XAU_USD", prices)
-        assert report.symbol == "XAUUSD"
+        assert analyze_setup("BTC_USD", prices).symbol == "BTCUSD"
         assert analyze_setup("SOL_USD", prices).symbol == "SOLUSD"
-        assert analyze_setup("USD_CHF", prices).symbol == "USDCHF"
+        assert analyze_setup("ETH_USD", prices).symbol == "ETHUSD"
         assert analyze_setup("DOGE_USD", prices).symbol == "DOGEUSD"
         assert analyze_setup("ANSEM_USD", prices).symbol == "ANSEM"
         assert analyze_setup("WIF_USD", prices).symbol == "WIFUSD"
@@ -338,15 +302,12 @@ class TestAnalyzeSetup:
         assert _sl_tp_mult("WIF_USD") == (3.5, 5.0)
         assert _sl_tp_mult("PEPE_USD") == (3.5, 5.0)
         assert _sl_tp_mult("TRUMP_USD") == (3.5, 5.0)
-        # Commodities
-        assert _sl_tp_mult("XAU_USD") == (2.0, 4.0)
 
 
 class TestMeanReversionCryptoAware:
     def test_crypto_allows_higher_adx(self):
         """Crypto should allow mean reversion up to ADX 28, not just 22."""
         from bot.signal_engine import _mean_reversion, CRYPTO_SYMBOLS
-        # With a trending dataset ADX will be high; just verify it accepts symbol param
         data = compute_indicators(_ohcv_close([1.0] * 100))
         sig = _mean_reversion(data, "BTC_USD")
         assert sig.action in ("BUY", "SELL", "HOLD")
@@ -397,14 +358,6 @@ class TestSmartMoneyVeto:
 
 
 class TestLeverageStopLossClamp:
-    def test_forex_sl_clamped_for_25x_leverage(self):
-        prices = _ohcv_close([100.0] * 100)
-        prices.loc[80, "low"] = 70.0
-        data = compute_indicators(prices)
-        sl, tp1, tp2, tp3 = _forex_structural_sl_tp("EUR_USD", "BUY", 100.0, 0.5, data)
-        # The SL distance must not exceed 2.2% of price (100.0 * 0.022 = 2.2 => sl >= 97.8)
-        assert sl >= 97.8
-
     def test_crypto_sl_clamped_for_25x_leverage(self):
         from bot.signal_engine import _make_report
         prices = _ohcv_close([100.0] * 100)
@@ -415,21 +368,6 @@ class TestLeverageStopLossClamp:
         assert report.stop_loss is not None
         assert report.stop_loss >= 98.0
 
-
-class TestForexSessionGate:
-    def test_forex_off_hours_blocked(self):
-        # 22:00 UTC is off-hours rollover
-        times = pd.date_range("2025-01-01 22:00:00", periods=100, freq="15min", tz="UTC")
-        prices = pd.DataFrame({
-            "time": times,
-            "open": [1.10] * 100,
-            "high": [1.11] * 100,
-            "low": [1.09] * 100,
-            "close": [1.10] * 100,
-        })
-        report = analyze_setup("EUR_USD", prices)
-        assert report.action == "WAIT"
-        assert "Off-hours" in report.reason
 
 
 class TestLimitOrderSignals:

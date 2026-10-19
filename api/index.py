@@ -37,10 +37,17 @@ class handler(BaseHTTPRequestHandler):
             update = json.loads(post_data.decode("utf-8"))
             if update.get("action") == "check_trades":
                 from bot.paper_engine import check_open_trades
+                from bot.poly_paper_engine import check_open_poly_trades
                 from bot.access_control import process_due_broadcasts
                 alerts = check_open_trades()
+                poly_alerts = check_open_poly_trades()
                 bcasts = process_due_broadcasts()
-                resp_payload = {"ok": True, "paper_trade_alerts": len(alerts), "broadcasts_executed": bcasts}
+                resp_payload = {
+                    "ok": True,
+                    "paper_trade_alerts": len(alerts),
+                    "poly_trade_alerts": len(poly_alerts),
+                    "broadcasts_executed": bcasts,
+                }
             elif "callback_query" in update:
                 cb = update["callback_query"]
                 qid = cb.get("id")

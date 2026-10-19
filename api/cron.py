@@ -12,10 +12,16 @@ class handler(BaseHTTPRequestHandler):
         """Triggered by Cron / 24/7 Trade Watcher to check open paper trades, process broadcasts, and run AutoPilot."""
         # 1. Check open paper trades FIRST (trigger TP1/SL closures and deliver to owning users)
         paper_trade_alerts = []
+        poly_trade_alerts = []
         try:
             paper_trade_alerts = check_open_trades()
         except Exception as exc:
             print(f"[Cron PaperTrade] Error: {exc}")
+        try:
+            from bot.poly_paper_engine import check_open_poly_trades
+            poly_trade_alerts = check_open_poly_trades()
+        except Exception as exc:
+            print(f"[Cron PolyTrade] Error: {exc}")
 
         # 2. Process due scheduled broadcasts
         executed_broadcasts = []
