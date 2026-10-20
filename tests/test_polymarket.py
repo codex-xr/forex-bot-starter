@@ -86,6 +86,7 @@ class TestPolymarketSignalEngine:
             m = dict(SAMPLE_MARKET_RAW)
             m["id"] = str(600000 + i)
             m["question"] = f"Will Event #{i} happen by Friday?"
+            m["slug"] = f"will-event-{i}-happen"
             m["volume24hr"] = 25000.0 * (i + 1)
             markets.append(m)
         mock_fetch.return_value = markets

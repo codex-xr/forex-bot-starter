@@ -18,7 +18,7 @@ class PolymarketSignal:
     market_id: str
     question: str
     category: str
-    action: str          # "BUY YES" or "BUY NO"
+    action: str          # "BUY YES" or "BUY NO" (or "BUY UP (YES)" / "BUY DOWN (NO)")
     side: str            # "YES" or "NO"
     confidence: int      # 70 - 96 (%)
     entry_price: float   # 0.01 - 0.99 ($)
@@ -34,6 +34,8 @@ class PolymarketSignal:
     liquidity: float
     reason: str
     slug: str = ""
+    event_title: str = ""
+    group_item: str = ""
 
     @property
     def url(self) -> str:
@@ -46,6 +48,8 @@ class PolymarketSignal:
         safe_q = html.escape(self.question)
         safe_cat = html.escape(self.category)
         safe_reason = html.escape(self.reason)
+        safe_event = html.escape(self.event_title or self.question)
+        safe_group = html.escape(self.group_item)
 
         entry_cents = self.entry_price * 100.0
         fair_cents = self.fair_price * 100.0
@@ -62,11 +66,24 @@ class PolymarketSignal:
 
         side_emoji = "🟢" if self.side == "YES" else "🔴"
 
+        # Show exact Polymarket search title + row name so user can find it in 2 seconds
+        if self.group_item and self.event_title and self.event_title.lower() != self.question.lower():
+            location_lines = (
+                f"🔍 <b>Search on Polymarket:</b> <a href=\"{self.url}\">{safe_event} ↗</a>\n"
+                f"📌 <b>Select Row:</b> <code>{safe_group}</code> ({safe_q})\n"
+            )
+            action_line = f"🎯 <b>Action:</b> {side_emoji} <b>{html.escape(self.action)}</b> on <code>{safe_group}</code>\n"
+        else:
+            location_lines = (
+                f"🔍 <b>Search on Polymarket:</b> <a href=\"{self.url}\">{safe_event} ↗</a>\n"
+            )
+            action_line = f"🎯 <b>Action:</b> {side_emoji} <b>{html.escape(self.action)}</b>\n"
+
         return (
             f"🔮 <b>POLYMARKET SIGNAL {idx_prefix}— <code>{self.confidence}%</code> CONFIDENCE</b>\n"
-            f"📌 <b>{safe_q}</b>\n"
+            f"{location_lines}"
             f"🏷️ Category: <b>{safe_cat}</b> | 💧 24h Vol: <code>${self.volume_24h:,.0f}</code>\n"
-            f"🎯 <b>Action:</b> {side_emoji} <b>{self.action}</b>\n"
+            f"{action_line}"
             f"💵 <b>Entry Price:</b> <code>{entry_cents:.1f}¢</code> (<code>${self.entry_price:.3f}</code>)\n"
             f"🧠 <b>Bot Fair Odds:</b> <code>{fair_cents:.1f}¢</code> (<b>+{self.edge_pct:.1f}% Edge</b>)\n"
             f"📈 <b>TP 1 (Cash-Out):</b> <code>{tp1_cents:.1f}¢</code> (<b>+{self.tp1_roi_pct:.1f}%</b> | <code>+${tp1_profit:.2f}</code> on ${bet_size:g})\n"
@@ -352,7 +369,10 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
         return None
 
     side = best_candidate["side"]
-    action = f"BUY {side}"
+    if out0 == "UP" and out1 == "DOWN":
+        action = "BUY UP (YES)" if side == "YES" else "BUY DOWN (NO)"
+    else:
+        action = f"BUY {side}"
     entry = best_candidate["entry"]
     confidence = best_candidate["confidence"]
     reasons = best_candidate["reasons"]
@@ -377,11 +397,16 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
         reasons.append(f"Undervalued {side} odds at {entry * 100:.0f}¢ with strong liquidity depth")
 
     slug = str(raw.get("slug") or "")
+    event_title = question
+    group_item = str(raw.get("groupItemTitle") or "").strip()
     events = raw.get("events")
     if isinstance(events, list) and events and isinstance(events[0], dict):
         event_slug = events[0].get("slug")
         if event_slug:
             slug = str(event_slug)
+        ev_title = str(events[0].get("title") or "").strip()
+        if ev_title:
+            event_title = ev_title
 
     sig = PolymarketSignal(
         market_id=market_id,
@@ -403,6 +428,8 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
         liquidity=liquidity,
         reason=" | ".join(reasons[:3]),
         slug=slug,
+        event_title=event_title,
+        group_item=group_item,
     )
     _SIGNALS_BY_MARKET_ID[market_id] = sig
     return sig
@@ -428,29 +455,38 @@ def scan_polymarket_signals(
 
     clean_query = query.strip().lower()
     candidates: list[PolymarketSignal] = []
-    seen_questions: set[str] = set()
 
     for m in raw_markets:
         q_text = str(m.get("question") or "")
         cat_text = str(m.get("category") or "")
+        ev_title = ""
+        events = m.get("events")
+        if isinstance(events, list) and events and isinstance(events[0], dict):
+            ev_title = str(events[0].get("title") or "")
         if clean_query:
-            if clean_query not in q_text.lower() and clean_query not in cat_text.lower():
+            combined_text = f"{q_text} {cat_text} {ev_title}".lower()
+            if clean_query not in combined_text:
                 continue
-
-        # Dedup near-identical questions
-        q_norm = re.sub(r"[^a-z0-9]", "", q_text.lower())[:45]
-        if q_norm in seen_questions:
-            continue
 
         is_crypto_q = any(k in q_text.lower() for k in ("bitcoin", "btc", "ethereum", "eth", "solana", "sol"))
         sig = evaluate_polymarket_market(m, check_crypto_live=is_crypto_q)
         if sig and sig.confidence >= min_confidence:
-            seen_questions.add(q_norm)
             candidates.append(sig)
 
     # Sort by Confidence % descending, then by 24h Volume descending
     candidates.sort(key=lambda s: (s.confidence, s.volume_24h), reverse=True)
-    top_picks = candidates[:limit]
+
+    # Deduplicate by parent Polymarket Event page (slug) so all 5 picks are distinct events
+    top_picks: list[PolymarketSignal] = []
+    seen_events: set[str] = set()
+    for sig in candidates:
+        ev_key = sig.slug or re.sub(r"[^a-z0-9]", "", sig.question.lower())[:45]
+        if ev_key in seen_events:
+            continue
+        seen_events.add(ev_key)
+        top_picks.append(sig)
+        if len(top_picks) >= limit:
+            break
 
     if user_id is not None:
         _RECENT_SIGNALS_BY_USER[str(user_id)] = top_picks
