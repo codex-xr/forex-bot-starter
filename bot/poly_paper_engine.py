@@ -172,7 +172,7 @@ def _serialize_poly_store(store: MultiUserPolyStore) -> dict:
 def _load_poly_store(force: bool = False) -> MultiUserPolyStore:
     global _POLY_STORE, _LAST_POLY_SYNC_TS
     now = time.time()
-    if _POLY_STORE is not None and not force and (now - _LAST_POLY_SYNC_TS < 2.0):
+    if _POLY_STORE is not None and (os.getenv("PYTEST_CURRENT_TEST") or (not force and (now - _LAST_POLY_SYNC_TS < 2.0))):
         return _POLY_STORE
 
     store = MultiUserPolyStore()

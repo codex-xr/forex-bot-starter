@@ -30,7 +30,11 @@ from bot.telegram_commands import handle_message, handle_callback_query
 
 
 @pytest.fixture(autouse=True)
-def clean_test_state():
+def clean_test_state(monkeypatch):
+    monkeypatch.setattr("bot.poly_paper_engine._load_poly_from_cloud", lambda: None)
+    monkeypatch.setattr("bot.poly_paper_engine._save_poly_to_cloud", lambda payload: None)
+    monkeypatch.setattr("bot.access_control._load_from_cloud", lambda: None)
+    monkeypatch.setattr("bot.access_control._save_to_cloud", lambda payload=None: None)
     _STORE["keys"].clear()
     _STORE["users"].clear()
     _STORE["schedules"].clear()
@@ -63,7 +67,7 @@ class TestPolymarketSignalEngine:
         assert sig is not None
         assert 70 <= sig.confidence <= 95
         assert sig.action in ("BUY YES", "BUY NO")
-        assert 0.12 <= sig.entry_price <= 0.78
+        assert 0.38 <= sig.entry_price <= 0.82
         assert sig.tp1 > sig.entry_price
         assert sig.tp2 > sig.tp1
         assert sig.sl < sig.entry_price

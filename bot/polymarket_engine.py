@@ -267,114 +267,107 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
 
     category = _detect_category(question, raw)
 
-    # Determine which side (YES vs NO) sits in the asymmetric "Money Zone" (0.14 to 0.78)
-    # and has momentum + whale volume confluence
-    reasons: list[str] = []
-    score_yes = 50.0
-    score_no = 50.0
-
     # 1. Volume-to-Liquidity Velocity (Whale Activity Factor)
     vol_liq_ratio = vol_24h / max(liquidity, 1000.0)
     if vol_liq_ratio >= 1.5:
-        vol_bonus = min(14.0, 6.0 + vol_liq_ratio * 2.0)
-        reasons.append(f"Heavy whale turnover ({vol_liq_ratio:.1f}x Vol/Liq ratio)")
+        vol_bonus = min(12.0, 5.0 + vol_liq_ratio * 1.8)
+        vol_reason = f"Heavy whale turnover ({vol_liq_ratio:.1f}x Vol/Liq ratio)"
     elif vol_24h >= 50000:
-        vol_bonus = 9.0
-        reasons.append(f"Deep institutional volume (${vol_24h:,.0f} 24h)")
+        vol_bonus = 8.0
+        vol_reason = f"Deep institutional volume (${vol_24h:,.0f} 24h)"
     elif vol_24h >= 10000:
         vol_bonus = 5.0
-        reasons.append(f"Active order flow (${vol_24h:,.0f} 24h)")
+        vol_reason = f"Active order flow (${vol_24h:,.0f} 24h)"
     else:
         vol_bonus = 2.0
+        vol_reason = f"Liquid market (${vol_24h:,.0f} 24h)"
 
-    # 2. 24h & 7d Odds Momentum Factor
-    if day_change >= 0.03:
-        score_yes += min(16.0, day_change * 140.0) + vol_bonus
-        reasons.append(f"YES odds surging +{day_change * 100:.1f}¢ today")
-    elif day_change <= -0.03:
-        score_no += min(16.0, abs(day_change) * 140.0) + vol_bonus
-        reasons.append(f"Smart money accumulating NO (YES down {day_change * 100:.1f}¢ today)")
-    else:
-        # Moderate shift or orderbook skew
-        mid = (best_bid + best_ask) / 2.0 if (best_bid > 0 and best_ask > 0) else yes_price
-        if yes_price >= 0.50:
-            score_yes += vol_bonus + 5.0
-        else:
-            score_no += vol_bonus + 5.0
-        if abs(week_change) >= 0.05:
-            if week_change > 0:
-                score_yes += 7.0
-                reasons.append(f"Weekly momentum +{week_change * 100:.1f}¢")
-            else:
-                score_no += 7.0
-                reasons.append(f"Weekly trend favoring NO ({week_change * 100:.1f}¢)")
-
-    # 3. Tight Order-Book Spread & Liquidity Bonus
-    if spread <= 0.015 and liquidity >= 15000:
-        score_yes += 5.0
-        score_no += 5.0
-        reasons.append(f"Tight institutional spread ({spread * 100:.1f}¢)")
-
-    # 4. Asymmetric Payout Sweet-Spot Filter (14¢ - 76¢)
-    # Buying at 92¢ risks $10 to make $0.80 (bad R:R). Prioritize 15¢ - 75¢!
-    if 0.15 <= yes_price <= 0.75:
-        score_yes += 10.0
-    elif yes_price > 0.82 or yes_price < 0.10:
-        score_yes -= 20.0
-
-    if 0.15 <= no_price <= 0.75:
-        score_no += 10.0
-    elif no_price > 0.82 or no_price < 0.10:
-        score_no -= 20.0
-
-    # 5. Optional Live Binance Cross-Market Check for Crypto Markets
+    # Optional Live Binance Cross-Market Check for Crypto Markets
+    crypto_side, crypto_reason = (None, "")
     if check_crypto_live and category == "Crypto":
         crypto_side, crypto_reason = _get_crypto_spot_bias(question)
-        if crypto_side == "YES":
-            score_yes += 12.0
-            score_no -= 8.0
-            if crypto_reason:
-                reasons.insert(0, crypto_reason)
-        elif crypto_side == "NO":
-            score_no += 12.0
-            score_yes -= 8.0
-            if crypto_reason:
-                reasons.insert(0, crypto_reason)
 
-    # Pick winning side
-    if score_yes >= score_no:
-        side = "YES"
-        action = "BUY YES"
-        entry = round(yes_price, 3)
-        raw_conf = int(round(score_yes))
-    else:
-        side = "NO"
-        action = "BUY NO"
-        entry = round(no_price, 3)
-        raw_conf = int(round(score_no))
+    # 2. Evaluate YES and NO using 2025-2026 Calibrated Favorite-Momentum Confluence
+    # Avoids <38c longshot traps (favorite-longshot bias) and >82c low-payout traps
+    best_candidate: dict | None = None
+    for side_cand, p_cand, d_mom, w_mom in (
+        ("YES", yes_price, day_change, week_change),
+        ("NO", no_price, -day_change, -week_change),
+    ):
+        if p_cand < 0.38 or p_cand > 0.82:
+            continue
 
-    # Enforce strict sweet-spot entry range (12¢ to 78¢) so TP1 always has room to pay out handsomely
-    if entry < 0.12 or entry > 0.78:
+        # Never buy into a collapsing favorite (require aligned or stable momentum)
+        if d_mom < -0.01 or w_mom < -0.02:
+            continue
+
+        cand_reasons: list[str] = [vol_reason]
+        score = 54.0 + vol_bonus
+
+        if 0.52 <= p_cand <= 0.82:
+            score += 12.0
+            cand_reasons.append(f"Consensus leader ({p_cand * 100:.0f}¢) with smart-money support")
+        else:
+            # 38c - 52c breakout contender requires strong daily + weekly surge
+            if d_mom >= 0.025 and w_mom >= 0.02:
+                score += 10.0
+                cand_reasons.append(f"Breakout contender surging +{d_mom * 100:.1f}¢ (24h)")
+            else:
+                continue
+
+        if d_mom >= 0.02:
+            score += min(12.0, d_mom * 120.0)
+            if f"+{d_mom * 100:.1f}¢" not in " ".join(cand_reasons):
+                cand_reasons.append(f"{side_cand} odds surging +{d_mom * 100:.1f}¢ today")
+        elif d_mom >= 0.0:
+            score += 4.0
+
+        if w_mom >= 0.04:
+            score += min(10.0, w_mom * 70.0)
+            cand_reasons.append(f"7d trend +{w_mom * 100:.1f}¢")
+        elif w_mom >= 0.0:
+            score += 3.0
+
+        if spread <= 0.015 and liquidity >= 15000:
+            score += 4.0
+            cand_reasons.append(f"Tight institutional spread ({spread * 100:.1f}¢)")
+
+        if crypto_side == side_cand:
+            score += 10.0
+            if crypto_reason:
+                cand_reasons.insert(0, crypto_reason)
+        elif crypto_side and crypto_side != side_cand:
+            score -= 8.0
+
+        cand_conf = max(65, min(95, int(round(score))))
+        if best_candidate is None or cand_conf > best_candidate["confidence"]:
+            best_candidate = {
+                "side": side_cand,
+                "entry": round(p_cand, 3),
+                "confidence": cand_conf,
+                "reasons": cand_reasons,
+            }
+
+    if not best_candidate:
         return None
 
-    confidence = max(65, min(95, raw_conf))
+    side = best_candidate["side"]
+    action = f"BUY {side}"
+    entry = best_candidate["entry"]
+    confidence = best_candidate["confidence"]
+    reasons = best_candidate["reasons"]
 
     # Calculate Fair Odds & Edge %
-    # Higher confidence = stronger edge over current market price
     edge_cents = max(0.08, min(0.24, (confidence - 60) * 0.0055))
     fair_price = min(0.95, round(entry + edge_cents, 3))
     edge_pct = round((fair_price - entry) * 100.0, 1)
 
-    # Calculate realistic TP1, TP2, and SL share prices
-    # Risk distance: ~22% to 28% of entry price (clamped to at least 4¢ and at most 14¢)
-    risk_dist = max(0.04, min(0.14, round(entry * 0.25, 3)))
-    sl = max(0.02, round(entry - risk_dist, 3))
-    actual_risk = max(0.02, entry - sl)
+    # Calculate 2025-2026 Calibrated Noise-Resistant SL, TP1 (Cash-Out), and TP2 (Runner)
+    risk_dist = max(0.10, min(0.18, round(entry * 0.28, 3)))
+    sl = max(0.05, round(entry - risk_dist, 3))
 
-    # TP1 = +1.25R to +1.4R (typically +28% to +40% profit on the bet!)
-    tp1 = min(0.94, round(entry + max(actual_risk * 1.30, 0.06), 3))
-    # TP2 = +2.4R (runner target before $1.00 resolution)
-    tp2 = min(0.97, round(entry + max(actual_risk * 2.40, 0.12), 3))
+    tp1 = min(0.93, round(entry + max(0.08, (1.0 - entry) * 0.42), 3))
+    tp2 = min(0.97, round(entry + max(0.15, (1.0 - entry) * 0.72), 3))
 
     tp1_roi = round(((tp1 - entry) / entry) * 100.0, 1)
     tp2_roi = round(((tp2 - entry) / entry) * 100.0, 1)
