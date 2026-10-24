@@ -34,8 +34,9 @@ from bot.telegram_commands import handle_message, handle_callback_query
 def clean_test_state(monkeypatch):
     monkeypatch.setattr("bot.poly_paper_engine._load_poly_from_cloud", lambda: None)
     monkeypatch.setattr("bot.poly_paper_engine._save_poly_to_cloud", lambda payload: None)
-    monkeypatch.setattr("bot.access_control._load_from_cloud", lambda: None)
-    monkeypatch.setattr("bot.access_control._save_to_cloud", lambda payload=None: None)
+    monkeypatch.setattr("bot.access_control._load_store", lambda force=False: _STORE)
+    monkeypatch.setattr("bot.access_control._save_store", lambda: None)
+    monkeypatch.setattr("bot.telegram_commands.telegram_request", lambda *a, **kw: {"ok": True})
     _STORE["keys"].clear()
     _STORE["users"].clear()
     _STORE["schedules"].clear()
