@@ -58,6 +58,7 @@ from bot.poly_paper_engine import (
     check_open_poly_trades,
     get_poly_status_report,
     get_poly_wallet_report,
+    get_poly_daily_summary_report,
 )
 from bot.session_bot import build_session_scan, ALL_WATCHLIST
 from bot.signal_engine import analyze_setup, compute_trade_levels
@@ -161,14 +162,17 @@ def get_poly_menu_keyboard(is_admin_user: bool = False) -> dict:
         ],
         [
             {"text": "📊 Active Bets (/pstatus)", "callback_data": "/pstatus"},
+            {"text": "📈 Daily Summary (/psummary)", "callback_data": "/psummary"},
+        ],
+        [
             {"text": "💼 Prediction Wallet (/pwallet)", "callback_data": "/pwallet"},
-        ],
-        [
             {"text": "💵 Set Bet Amount (/polybet)", "callback_data": "/polybet"},
-            {"text": "❌ Cash Out All (/pclose all)", "callback_data": "/pclose all"},
         ],
         [
+            {"text": "❌ Cash Out All (/pclose all)", "callback_data": "/pclose all"},
             {"text": "🔄 Reset Wallet (/preset)", "callback_data": "/preset"},
+        ],
+        [
             {"text": "🔙 Back to Main Menu (/menu)", "callback_data": "/menu"},
         ],
     ]
@@ -259,13 +263,14 @@ Tap any button below or type a command:
 
 POLY_MENU_TEXT = """🔮 <b>Polymarket Prediction Signal Menu</b>
 
-Tap any button below or use the 6 simple commands:
+Tap any button below or use the simple commands:
 
 🎯 <b>Prediction Commands:</b>
 • <code>/poly</code> — Scan Top 5 highest-confidence Polymarket predictions (or <code>/poly crypto</code>, <code>/poly sports</code>, <code>/poly trump</code>)
 • <code>/polybet &lt;amount&gt;</code> — Set bet amount per prediction (default: <code>$10</code>)
 • <code>/penter &lt;number&gt;</code> — Enter a prediction from your scan (e.g. <code>/penter 1</code>) or tap the <b>Enter Bet</b> button under any signal
 • <code>/pstatus</code> — View active predictions, live odds & floating profit/loss
+• <code>/psummary</code> — End-of-day prediction summary & daily profit/loss
 • <code>/pclose &lt;number&gt;</code> — Cash out a prediction early (or <code>/pclose all</code>)
 • <code>/pwallet</code> — View your separate Polymarket balance, bet size & win rate (or <code>/pwallet reset 100</code>)"""
 
@@ -793,6 +798,7 @@ def handle_message(message: dict) -> None:
             "/polybet", "/pbet",
             "/penter", "/polyenter",
             "/pstatus", "/polystatus", "/pbets",
+            "/psummary", "/polysummary", "/pdaily", "/ppnl",
             "/pclose", "/polyclose", "/pcashout",
             "/pwallet", "/polywallet", "/pstats", "/preset",
         }:
@@ -937,6 +943,12 @@ def handle_message(message: dict) -> None:
                 )
                 return
 
+            if command in {"/psummary", "/polysummary", "/pdaily", "/ppnl"}:
+                target_date = subcmd if subcmd else None
+                sum_text, sum_kb = get_poly_daily_summary_report(target_date=target_date, user_id=chat_id)
+                send_telegram_message(sum_text, chat_id=chat_id, reply_markup=sum_kb)
+                return
+
             if command in {"/pwallet", "/polywallet", "/pstats"}:
                 wallet_text, wallet_kb = get_poly_wallet_report(user_id=chat_id)
                 send_telegram_message(wallet_text, chat_id=chat_id, reply_markup=wallet_kb)
@@ -973,6 +985,13 @@ def handle_message(message: dict) -> None:
         }
 
         if command in crypto_commands:
+            # If a Prediction-only user types /summary, automatically show their Polymarket daily summary
+            if command in {"/summary", "/daily", "/pnl"} and get_user_access_tier(chat_id) == "poly" and not admin_flag:
+                target_date = subcmd if subcmd else None
+                sum_text, sum_kb = get_poly_daily_summary_report(target_date=target_date, user_id=chat_id)
+                send_telegram_message(sum_text, chat_id=chat_id, reply_markup=sum_kb)
+                return
+
             if not _verify_tier_access(chat_id, user_info, "crypto"):
                 return
 

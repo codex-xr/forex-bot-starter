@@ -25,6 +25,7 @@ from bot.poly_paper_engine import (
     check_open_poly_trades,
     get_poly_status_report,
     get_poly_wallet_report,
+    get_poly_daily_summary_report,
 )
 from bot.telegram_commands import handle_message, handle_callback_query
 
@@ -150,6 +151,14 @@ class TestSeparatePolymarketPaperWallet:
         assert "TP1 HIT" in alerts[0]
         assert get_poly_settings(user_id=uid)["open_positions_count"] == 0
         assert get_poly_settings(user_id=uid)["virtual_balance"] > 100.0
+
+        # Verify daily summary report (/psummary) lists today's closed prediction and profit
+        sum_text, sum_kb = get_poly_daily_summary_report(user_id=uid)
+        assert "POLYMARKET END-OF-DAY SUMMARY" in sum_text
+        assert "Daily Realized PnL:" in sum_text
+        assert "Top Winning Predictions Today:" in sum_text
+        assert "Will Bitcoin reach $100,000" in sum_text
+        assert sum_kb is not None
 
 
 class TestThreeTierAccessControlAndMenus:
