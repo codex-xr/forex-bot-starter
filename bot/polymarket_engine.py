@@ -124,10 +124,27 @@ def _detect_category(question: str, raw_market: dict) -> str:
     return "Trending Events"
 
 
+def _extract_target_price(question: str) -> float | None:
+    """Extracts a numeric dollar price target (e.g. '$87,500' or '$100k') from a crypto question."""
+    m_k = re.search(r"\$\s*([0-9]+(?:\.[0-9]+)?)\s*k\b", question.lower())
+    if m_k:
+        try:
+            return float(m_k.group(1)) * 1000.0
+        except ValueError:
+            pass
+    m_num = re.search(r"\$\s*([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)", question)
+    if m_num:
+        try:
+            return float(m_num.group(1).replace(",", ""))
+        except ValueError:
+            pass
+    return None
+
+
 def _get_crypto_spot_bias(question: str) -> tuple[str | None, str]:
     """
-    Cross-checks crypto-related Polymarket questions with live Binance trend & momentum
-    to give the user an institutional cross-market edge.
+    Cross-checks crypto-related Polymarket questions with live Binance spot price,
+    target distance, and 4H/15m trend & momentum for an institutional cross-market edge.
     """
     q = question.lower()
     target_sym = None
@@ -154,19 +171,31 @@ def _get_crypto_spot_bias(question: str) -> tuple[str | None, str]:
         df = compute_indicators(candles)
         bias = htf_bias(df)
         last = df.iloc[-1]
+        curr_spot = float(last["close"])
         rsi_v = float(last["rsi"]) if "rsi" in last and last["rsi"] == last["rsi"] else 50.0
         rvol_v = float(last["rvol"]) if "rvol" in last and last["rvol"] == last["rvol"] else 1.0
         coin_name = target_sym.split("_")[0]
 
-        # Check if question is negative ("dip", "below", "under", "crash", "drop")
         is_bearish_question = any(w in q for w in ("below", "under", "dip", "drop", "crash", "less than"))
+        target_price = _extract_target_price(question)
+
+        # Fix #5: Check actual percentage distance from live Binance spot price to question target
+        if target_price and target_price > 0 and curr_spot > 0:
+            dist_pct = ((target_price - curr_spot) / curr_spot) * 100.0
+            abs_dist = abs(dist_pct)
+            if abs_dist >= 16.0:
+                # Target is very far away (>16% move required) -> statistical edge favors NO
+                return "NO", f"Binance {coin_name} (${curr_spot:,.0f}) is {abs_dist:.1f}% away from ${target_price:,.0f} target"
+            if abs_dist <= 5.5:
+                if (dist_pct > 0 and bias == "bullish") or (dist_pct < 0 and bias == "bearish"):
+                    return "YES", f"Binance {coin_name} (${curr_spot:,.0f}) is within {abs_dist:.1f}% of ${target_price:,.0f} with {bias} momentum"
 
         if bias == "bullish" and rsi_v >= 52:
             favored_side = "NO" if is_bearish_question else "YES"
-            return favored_side, f"Binance {coin_name} 4H/15m trend is Bullish (RSI {rsi_v:.0f}, RVol {rvol_v:.1f}x)"
+            return favored_side, f"Binance {coin_name} (${curr_spot:,.0f}) trend is Bullish (RSI {rsi_v:.0f}, RVol {rvol_v:.1f}x)"
         if bias == "bearish" and rsi_v <= 48:
             favored_side = "YES" if is_bearish_question else "NO"
-            return favored_side, f"Binance {coin_name} 4H/15m trend is Bearish (RSI {rsi_v:.0f}, RVol {rvol_v:.1f}x)"
+            return favored_side, f"Binance {coin_name} (${curr_spot:,.0f}) trend is Bearish (RSI {rsi_v:.0f}, RVol {rvol_v:.1f}x)"
     except Exception:
         pass
     return None, ""
@@ -225,6 +254,7 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
     if raw.get("acceptingOrders") is False:
         return None
 
+    days_to_end: float | None = None
     end_date_str = str(raw.get("endDate") or "").strip()
     if end_date_str:
         try:
@@ -233,8 +263,10 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
             end_dt = datetime.fromisoformat(clean_iso)
             if end_dt.tzinfo is None:
                 end_dt = end_dt.replace(tzinfo=timezone.utc)
-            if end_dt.timestamp() < (time.time() - 3600):
+            now_ts = time.time()
+            if end_dt.timestamp() < (now_ts - 3600):
                 return None
+            days_to_end = (end_dt.timestamp() - now_ts) / 86400.0
         except Exception:
             pass
 
@@ -272,6 +304,7 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
     if vol_24h < 1500 and liquidity < 3000:
         return None
 
+    hour_change = float(raw.get("oneHourPriceChange") or 0.0)
     day_change = float(raw.get("oneDayPriceChange") or 0.0)
     week_change = float(raw.get("oneWeekPriceChange") or 0.0)
     best_bid = float(raw.get("bestBid") or yes_price)
@@ -282,18 +315,23 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
     if spread > 0.065:
         return None
 
-    category = _detect_category(question, raw)
+    # Fix #1: Filter out "Dead Money" far-future markets (> 75 days out) unless surging >= 5c today
+    if days_to_end is not None and days_to_end > 75.0 and abs(day_change) < 0.05:
+        return None
 
-    # 1. Volume-to-Liquidity Velocity (Whale Activity Factor)
+    category = _detect_category(question, raw)
+    group_item = str(raw.get("groupItemTitle") or "").strip()
+
+    # 1. Volume-to-Liquidity Velocity (Whale Activity Factor) — de-inflated scale (Fix #3)
     vol_liq_ratio = vol_24h / max(liquidity, 1000.0)
     if vol_liq_ratio >= 1.5:
-        vol_bonus = min(12.0, 5.0 + vol_liq_ratio * 1.8)
+        vol_bonus = min(9.0, 4.0 + vol_liq_ratio * 1.4)
         vol_reason = f"Heavy whale turnover ({vol_liq_ratio:.1f}x Vol/Liq ratio)"
     elif vol_24h >= 50000:
-        vol_bonus = 8.0
+        vol_bonus = 6.0
         vol_reason = f"Deep institutional volume (${vol_24h:,.0f} 24h)"
     elif vol_24h >= 10000:
-        vol_bonus = 5.0
+        vol_bonus = 4.0
         vol_reason = f"Active order flow (${vol_24h:,.0f} 24h)"
     else:
         vol_bonus = 2.0
@@ -304,53 +342,76 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
     if check_crypto_live and category == "Crypto":
         crypto_side, crypto_reason = _get_crypto_spot_bias(question)
 
-    # 2. Evaluate YES and NO using 2025-2026 Calibrated Favorite-Momentum Confluence
-    # Avoids <38c longshot traps (favorite-longshot bias) and >82c low-payout traps
+    # 2. Evaluate YES and NO using Calibrated 38c-74c Sweet Spot + Multi-Option & 1h Guards
     best_candidate: dict | None = None
-    for side_cand, p_cand, d_mom, w_mom in (
-        ("YES", yes_price, day_change, week_change),
-        ("NO", no_price, -day_change, -week_change),
+    for side_cand, p_cand, h_mom, d_mom, w_mom in (
+        ("YES", yes_price, hour_change, day_change, week_change),
+        ("NO", no_price, -hour_change, -day_change, -week_change),
     ):
-        if p_cand < 0.38 or p_cand > 0.82:
+        # Fix #2: Cap entry at 74c (instead of 82c) so every pick has >= +35% to +163% upside at $1.00
+        if p_cand < 0.38 or p_cand > 0.74:
+            continue
+
+        # Fix #4: Block last-hour reversals (never buy a 24h pump that is dumping >= 2.5c in the last hour)
+        if h_mom <= -0.025:
             continue
 
         # Never buy into a collapsing favorite (require aligned or stable momentum)
         if d_mom < -0.01 or w_mom < -0.02:
             continue
 
-        cand_reasons: list[str] = [vol_reason]
-        score = 54.0 + vol_bonus
+        # Fix #2b: On multi-choice group rows (e.g. "Lamine Yamal"), require active momentum so we never pick passive BUY NO rows
+        if group_item and side_cand == "NO" and d_mom < 0.025:
+            continue
 
-        if 0.52 <= p_cand <= 0.82:
-            score += 12.0
+        cand_reasons: list[str] = [vol_reason]
+        score = 52.0 + vol_bonus
+
+        if 0.52 <= p_cand <= 0.74:
+            score += 8.0
             cand_reasons.append(f"Consensus leader ({p_cand * 100:.0f}¢) with smart-money support")
         else:
             # 38c - 52c breakout contender requires strong daily + weekly surge
             if d_mom >= 0.025 and w_mom >= 0.02:
-                score += 10.0
+                score += 7.0
                 cand_reasons.append(f"Breakout contender surging +{d_mom * 100:.1f}¢ (24h)")
             else:
                 continue
 
+        # 24h & 1h Momentum Scoring (Fix #3 & #4)
         if d_mom >= 0.02:
-            score += min(12.0, d_mom * 120.0)
+            score += min(9.0, d_mom * 100.0)
             if f"+{d_mom * 100:.1f}¢" not in " ".join(cand_reasons):
                 cand_reasons.append(f"{side_cand} odds surging +{d_mom * 100:.1f}¢ today")
-        elif d_mom >= 0.0:
-            score += 4.0
+        elif d_mom >= 0.005:
+            score += 2.5
 
+        if h_mom >= 0.015:
+            score += 2.5
+
+        # 7d Trend Scoring
         if w_mom >= 0.04:
-            score += min(10.0, w_mom * 70.0)
+            score += min(6.0, w_mom * 50.0)
             cand_reasons.append(f"7d trend +{w_mom * 100:.1f}¢")
-        elif w_mom >= 0.0:
-            score += 3.0
+        elif w_mom >= 0.005:
+            score += 2.0
+
+        # Fix #1b: Catalyst Horizon Bonus (prioritize markets resolving soon!)
+        if days_to_end is not None:
+            if 0.0 < days_to_end <= 7.0:
+                score += 4.0
+                cand_reasons.append(f"Fast resolution ({max(1, int(round(days_to_end)))}d left)")
+            elif 7.0 < days_to_end <= 21.0:
+                score += 2.0
+            elif days_to_end > 45.0:
+                score -= 3.0
 
         if spread <= 0.015 and liquidity >= 15000:
-            score += 4.0
+            score += 3.0
             cand_reasons.append(f"Tight institutional spread ({spread * 100:.1f}¢)")
 
         if crypto_side == side_cand:
-            score += 10.0
+            score += 7.0
             if crypto_reason:
                 cand_reasons.insert(0, crypto_reason)
         elif crypto_side and crypto_side != side_cand:
@@ -382,12 +443,17 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
     fair_price = min(0.95, round(entry + edge_cents, 3))
     edge_pct = round((fair_price - entry) * 100.0, 1)
 
-    # Calculate 2025-2026 Calibrated Noise-Resistant SL, TP1 (Cash-Out), and TP2 (Runner)
-    risk_dist = max(0.10, min(0.18, round(entry * 0.28, 3)))
+    # Fix #6: Positive Reward-to-Risk Ratio (TP1 gain is ALWAYS >= Stop Loss risk)
+    risk_dist = max(0.08, min(0.15, round(entry * 0.24, 3)))
     sl = max(0.05, round(entry - risk_dist, 3))
+    actual_risk = max(0.04, entry - sl)
 
-    tp1 = min(0.93, round(entry + max(0.08, (1.0 - entry) * 0.42), 3))
-    tp2 = min(0.97, round(entry + max(0.15, (1.0 - entry) * 0.72), 3))
+    tp1 = min(0.93, round(entry + max(actual_risk * 1.15, (1.0 - entry) * 0.42), 3))
+    tp2 = min(0.97, round(entry + max(actual_risk * 1.85, (1.0 - entry) * 0.72), 3))
+
+    # Reject if TP1 doesn't offer at least 1:1 reward-to-risk
+    if (tp1 - entry) < (actual_risk * 0.98):
+        return None
 
     tp1_roi = round(((tp1 - entry) / entry) * 100.0, 1)
     tp2_roi = round(((tp2 - entry) / entry) * 100.0, 1)
@@ -398,7 +464,6 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
 
     slug = str(raw.get("slug") or "")
     event_title = question
-    group_item = str(raw.get("groupItemTitle") or "").strip()
     events = raw.get("events")
     if isinstance(events, list) and events and isinstance(events[0], dict):
         event_slug = events[0].get("slug")
