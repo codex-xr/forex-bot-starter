@@ -91,7 +91,10 @@ def get_main_hub_keyboard(is_admin_user: bool = False) -> dict:
             {"text": "🔮 Prediction Menu", "callback_data": "menu_poly"},
         ],
         [
+            {"text": "⏰ Scan Times (/time)", "callback_data": "/time"},
             {"text": "ℹ️ My Subscription (/myplan)", "callback_data": "/myplan"},
+        ],
+        [
             {"text": "❓ Full Help (/help)", "callback_data": "/help"},
         ],
     ]
@@ -134,12 +137,15 @@ def get_crypto_menu_keyboard(is_admin_user: bool = False) -> dict:
         ],
         # 4. Intelligence & Automation
         [
+            {"text": "⏰ Scan Times (/time)", "callback_data": "/time"},
             {"text": "📰 Breaking News (/news)", "callback_data": "/news"},
+        ],
+        [
             {"text": "🤖 Auto-Pilot 24/7 (/autopilot)", "callback_data": "/autopilot"},
+            {"text": "🔄 Reset Crypto Wallet (/resetaccount)", "callback_data": "/resetaccount"},
         ],
         # 5. Account & Navigation
         [
-            {"text": "🔄 Reset Crypto Wallet (/resetaccount)", "callback_data": "/resetaccount"},
             {"text": "🔙 Back to Main Menu (/menu)", "callback_data": "/menu"},
         ],
     ]
@@ -169,10 +175,11 @@ def get_poly_menu_keyboard(is_admin_user: bool = False) -> dict:
             {"text": "💵 Set Bet Amount (/polybet)", "callback_data": "/polybet"},
         ],
         [
+            {"text": "⏰ Scan Times (/time)", "callback_data": "/time"},
             {"text": "❌ Cash Out All (/pclose all)", "callback_data": "/pclose all"},
-            {"text": "🔄 Reset Wallet (/preset)", "callback_data": "/preset"},
         ],
         [
+            {"text": "🔄 Reset Wallet (/preset)", "callback_data": "/preset"},
             {"text": "🔙 Back to Main Menu (/menu)", "callback_data": "/menu"},
         ],
     ]
@@ -272,7 +279,15 @@ Tap any button below or use the simple commands:
 • <code>/pstatus</code> — View active predictions, live odds & floating profit/loss
 • <code>/psummary</code> — End-of-day prediction summary & daily profit/loss
 • <code>/pclose &lt;number&gt;</code> — Cash out a prediction early (or <code>/pclose all</code>)
-• <code>/pwallet</code> — View your separate Polymarket balance, bet size & win rate (or <code>/pwallet reset 100</code>)"""
+• <code>/pwallet</code> — View your separate Polymarket balance, bet size & win rate (or <code>/pwallet reset 100</code>)
+• <code>/time</code> — View recommended daily scan times"""
+
+
+SCAN_TIME_TEXT = """⏰ <b>Recommended Daily Scan Times</b>
+
+• <b>Morning:</b> <code>09:01</code> — <i>(Every 15 mins after that in that hour: <code>09:16</code>, <code>09:31</code>, <code>09:46</code>)</i>
+• <b>Afternoon:</b> <code>15:01</code> — <i>(Every 15 mins after that in that hour: <code>15:16</code>, <code>15:31</code>, <code>15:46</code>)</i>
+• <b>Night:</b> <code>20:01</code> — <i>(Every 15 mins after that in that hour: <code>20:16</code>, <code>20:31</code>, <code>20:46</code>)</i>"""
 
 
 USER_HELP_TEXT = (
@@ -955,8 +970,28 @@ def handle_message(message: dict) -> None:
                 return
 
         # -------------------------------------------------------------
-        # 4. Shared News Command (Accessible to Any Authorized User)
+        # 4. Shared Commands (Scan Time & News)
         # -------------------------------------------------------------
+        if command in {"/time", "/times", "/scantime", "/scantimes", "/tradingtime"}:
+            is_auth, _ = is_user_authorized(chat_id, user_info)
+            if not is_auth and not admin_flag:
+                send_telegram_message(UNAUTHORIZED_HELP_TEXT, chat_id=chat_id)
+                return
+            send_telegram_message(
+                SCAN_TIME_TEXT,
+                chat_id=chat_id,
+                reply_markup={"inline_keyboard": [
+                    [
+                        {"text": "📈 Crypto Menu", "callback_data": "menu_crypto"},
+                        {"text": "🔮 Prediction Menu", "callback_data": "menu_poly"},
+                    ],
+                    [
+                        {"text": "📱 Main Menu (/menu)", "callback_data": "/menu"},
+                    ],
+                ]},
+            )
+            return
+
         if command in {"/news", "/catalyst", "/catalysts"}:
             is_auth, _ = is_user_authorized(chat_id, user_info)
             if not is_auth and not admin_flag:
