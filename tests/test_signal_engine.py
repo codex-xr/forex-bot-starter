@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from unittest.mock import patch
 from bot.signal_engine import (
     SignalReport,
     StrategySignal,
@@ -15,6 +16,7 @@ from bot.signal_engine import (
     _fallback_scoring,
     _quality_gate,
     _crypto_momentum_surge,
+    _analyze_crypto_setup,
     analyze_setup,
 )
 
@@ -487,5 +489,35 @@ class TestSignalQualityUpgrades:
         data = compute_indicators(prices)
         action, _, _, _, _ = _fallback_scoring(data)
         assert action != "BUY"
+
+
+class TestRSIExhaustionGuard:
+    def test_oversold_climax_blocks_sell(self):
+        prices = _ohcv_close([100.0 - i * 0.5 for i in range(100)])
+        data = compute_indicators(prices)
+        assert data["rsi"].iloc[-1] <= 32.0
+
+        with patch("bot.signal_engine._quality_gate") as mock_gate:
+            mock_gate.return_value = SignalReport(
+                symbol="BTCUSD", action="SELL", confidence=88, trend="Bearish",
+                entry=50.0, stop_loss=51.0, take_profit=48.0, reason="Breakdown",
+            )
+            report = _analyze_crypto_setup("BTC_USD", data, "bearish", min_confidence=50)
+            assert report.action == "WAIT"
+            assert "RSI Oversold Climax" in report.reason
+
+    def test_overbought_climax_blocks_buy(self):
+        prices = _ohcv_close([100.0 + i * 0.8 for i in range(100)])
+        data = compute_indicators(prices)
+        assert data["rsi"].iloc[-1] >= 68.0
+
+        with patch("bot.signal_engine._quality_gate") as mock_gate:
+            mock_gate.return_value = SignalReport(
+                symbol="BTCUSD", action="BUY", confidence=88, trend="Bullish",
+                entry=180.0, stop_loss=178.0, take_profit=184.0, reason="Breakout",
+            )
+            report = _analyze_crypto_setup("BTC_USD", data, "bullish", min_confidence=50)
+            assert report.action == "WAIT"
+            assert "RSI Overbought Climax" in report.reason
 
 

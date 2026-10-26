@@ -325,7 +325,7 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
     bull_trend = macro_bull and last["ema20"] > last["ema50"] and close > last["ema20"] * 0.998
     bear_trend = macro_bear and last["ema20"] < last["ema50"] and close < last["ema20"] * 1.002
 
-    if bull_trend and 48 <= last_rsi <= 74 and last["macd_hist"] > 0:
+    if bull_trend and 48 <= last_rsi <= 68 and last["macd_hist"] > 0:
         is_breakout = (
             not is_overextended
             and close > prior_high
@@ -353,7 +353,7 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
                 f"EMA 20 dynamic support bounce, RSI {last_rsi:.0f}, strong trend continuation",
             )
 
-    if bear_trend and 26 <= last_rsi <= 52 and last["macd_hist"] < 0:
+    if bear_trend and 32 <= last_rsi <= 52 and last["macd_hist"] < 0:
         is_breakdown = (
             not is_overextended
             and close < prior_low
@@ -629,8 +629,8 @@ def _fallback_scoring(data: pd.DataFrame) -> tuple[str, int, str, int, int]:
 
     # 2. Directional Candle & Overextension Confirmation:
     # Require candle alignment with trade direction, EMA20 support/resistance, and non-exhausted RSI
-    bull_candle_ok = close >= open_p and close >= ema20 * 0.999 and rsi_v <= 72
-    bear_candle_ok = close <= open_p and close <= ema20 * 1.001 and rsi_v >= 28
+    bull_candle_ok = close >= open_p and close >= ema20 * 0.999 and rsi_v <= 68
+    bear_candle_ok = close <= open_p and close <= ema20 * 1.001 and rsi_v >= 32
 
     if long_score >= 60 and long_score >= short_score + 8 and bull_candle_ok:
         return "BUY", min(long_score, 95), "; ".join(all_lr), long_score, short_score
@@ -840,7 +840,40 @@ def _analyze_crypto_setup(
 
     report = _quality_gate(strategies, bias, data, symbol, min_confidence)
 
-    # 2. Active Smart Money VETO: Protect capital if whales or funding directly contradict the signal
+    # 2. RSI Exhaustion Guard: Prevent "Selling the Bottom" & "Buying the Top"
+    # When RSI <= 32 (oversold), fresh shorts are blocked to protect against selling the local bottom / relief bounce.
+    # When RSI >= 68 (overbought), fresh longs are blocked to protect against buying into extended resistance.
+    if report.action in ("BUY", "SELL"):
+        last_row = data.iloc[-1]
+        curr_rsi = float(last_row["rsi"]) if "rsi" in last_row and pd.notna(last_row["rsi"]) else 50.0
+
+        if report.action == "SELL" and curr_rsi <= 32.0:
+            return SignalReport(
+                symbol=report.symbol,
+                action="WAIT",
+                confidence=40,
+                trend=report.trend,
+                entry=None,
+                stop_loss=None,
+                take_profit=None,
+                reason=f"⛔ RSI Oversold Climax ({curr_rsi:.0f} ≤ 32) — Short blocked to protect against selling local bottom / relief bounce",
+                smart_money=sm_metrics.summary_text if sm_metrics else None,
+            )
+
+        if report.action == "BUY" and curr_rsi >= 68.0:
+            return SignalReport(
+                symbol=report.symbol,
+                action="WAIT",
+                confidence=40,
+                trend=report.trend,
+                entry=None,
+                stop_loss=None,
+                take_profit=None,
+                reason=f"⛔ RSI Overbought Climax ({curr_rsi:.0f} ≥ 68) — Long blocked to protect against buying extended top",
+                smart_money=sm_metrics.summary_text if sm_metrics else None,
+            )
+
+    # 3. Active Smart Money VETO: Protect capital if whales or funding directly contradict the signal
     if sm_metrics and report.action in ("BUY", "SELL"):
         is_vetoed, veto_reason = sm_metrics.is_vetoed(report.action)
         if is_vetoed:
