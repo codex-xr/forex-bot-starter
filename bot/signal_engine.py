@@ -384,7 +384,7 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
     return StrategySignal("Crypto Momentum Surge", "HOLD", 0, "")
 
 
-def _news_catalyst_momentum(data: pd.DataFrame, symbol: str) -> StrategySignal:
+def _news_catalyst_momentum(data: pd.DataFrame, symbol: str, bias: str = "neutral") -> StrategySignal:
     try:
         from bot.news_engine import get_asset_catalyst
         cat_info = get_asset_catalyst(symbol)
@@ -401,14 +401,16 @@ def _news_catalyst_momentum(data: pd.DataFrame, symbol: str) -> StrategySignal:
     rsi_v = float(last["rsi"]) if pd.notna(last["rsi"]) else 50
     adx_v = float(last["adx"]) if pd.notna(last["adx"]) else 20
 
-    if sentiment_label == "Bullish" and close >= ema20 and rsi_v >= 48 and adx_v >= 18:
+    open_p = float(last["open"])
+    macd_h = float(last["macd_hist"]) if "macd_hist" in last and pd.notna(last["macd_hist"]) else 0.0
+    if sentiment_label == "Bullish" and bias != "bearish" and close >= ema20 and close > open_p and macd_h >= 0 and 48 <= rsi_v <= 68 and adx_v >= 18:
         conf = min(95, 86 + abs(score) // 10)
         return StrategySignal(
             "News Catalyst Momentum", "BUY", conf,
             f"Bullish news catalyst: '{headline[:60]}...' confirmed by EMA20 breakout (RSI {rsi_v:.0f}, ADX {adx_v:.0f})",
         )
 
-    if sentiment_label == "Bearish" and close <= ema20 and rsi_v <= 52 and adx_v >= 18:
+    if sentiment_label == "Bearish" and bias != "bullish" and close <= ema20 and close < open_p and macd_h <= 0 and 32 <= rsi_v <= 52 and adx_v >= 18:
         conf = min(95, 86 + abs(score) // 10)
         return StrategySignal(
             "News Catalyst Momentum", "SELL", conf,
@@ -418,7 +420,7 @@ def _news_catalyst_momentum(data: pd.DataFrame, symbol: str) -> StrategySignal:
     return StrategySignal("News Catalyst Momentum", "HOLD", 0, "")
 
 
-def _mean_reversion(data: pd.DataFrame, symbol: str = "") -> StrategySignal:
+def _mean_reversion(data: pd.DataFrame, symbol: str = "", bias: str = "neutral") -> StrategySignal:
     last = data.iloc[-1]
     last_adx = float(last["adx"]) if pd.notna(last["adx"]) else 999
     # Crypto has higher baseline volatility; allow mean reversion up to ADX 28
@@ -426,10 +428,12 @@ def _mean_reversion(data: pd.DataFrame, symbol: str = "") -> StrategySignal:
     if last_adx >= adx_ceiling:
         return StrategySignal("Mean Reversion", "HOLD", 0, "")
 
-    if last["low"] <= last["lower_band"] and last["rsi"] <= 38 and check_rejection(last, "buy"):
+    allow_buy = not (last_adx >= 22 and bias == "bearish")
+    allow_sell = not (last_adx >= 22 and bias == "bullish")
+    if allow_buy and last["low"] <= last["lower_band"] and last["rsi"] <= 38 and last["close"] >= last["open"] and check_rejection(last, "buy"):
         return StrategySignal("Mean Reversion", "BUY", 78,
                               f"Lower BB touch ({last['lower_band']:.2f}), RSI {last['rsi']:.0f}, bullish rejection")
-    if last["high"] >= last["upper_band"] and last["rsi"] >= 62 and check_rejection(last, "sell"):
+    if allow_sell and last["high"] >= last["upper_band"] and last["rsi"] >= 62 and last["close"] <= last["open"] and check_rejection(last, "sell"):
         return StrategySignal("Mean Reversion", "SELL", 78,
                               f"Upper BB touch ({last['upper_band']:.2f}), RSI {last['rsi']:.0f}, bearish rejection")
     return StrategySignal("Mean Reversion", "HOLD", 0, "")
@@ -833,9 +837,9 @@ def _analyze_crypto_setup(
 
     strategies = [
         _smc_sweep(data, bias, symbol),
-        _mean_reversion(data, symbol),
+        _mean_reversion(data, symbol, bias),
         _crypto_momentum_surge(data, symbol),
-        _news_catalyst_momentum(data, symbol),
+        _news_catalyst_momentum(data, symbol, bias),
     ]
 
     report = _quality_gate(strategies, bias, data, symbol, min_confidence)
@@ -887,6 +891,8 @@ def _analyze_crypto_setup(
                 take_profit=None,
                 reason=f"⛔ {veto_reason} (Signal vetoed to protect capital)",
                 smart_money=sm_metrics.summary_text,
+            order_type=report.order_type,
+            market_price=report.market_price,
             )
 
     # 3. Layer Smart Money Confluence onto report
@@ -911,6 +917,8 @@ def _analyze_crypto_setup(
             tp3=report.tp3,
             catalyst=report.catalyst,
             smart_money=sm_metrics.summary_text,
+            order_type=report.order_type,
+            market_price=report.market_price,
         )
 
     return report

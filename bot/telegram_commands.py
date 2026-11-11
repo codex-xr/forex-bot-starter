@@ -1288,11 +1288,41 @@ def handle_message(message: dict) -> None:
                     )
                     return
                 target_sym = normalize_symbol(subcmd)
+                explicit_side = parts[2].upper().strip() if len(parts) > 2 else ""
+                if explicit_side in ("BUY", "LONG"):
+                    req_action = "BUY"
+                elif explicit_side in ("SELL", "SHORT"):
+                    req_action = "SELL"
+                else:
+                    req_action = None
 
                 try:
                     candles = fetch_live_candles(target_sym)
                     report = analyze_setup(target_sym, candles, min_confidence=60)
-                    action = "BUY" if report.action in ("BUY", "LONG") else ("SELL" if report.action in ("SELL", "SHORT") else "BUY")
+                    if req_action:
+                        action = req_action
+                    elif report.action in ("BUY", "LONG"):
+                        action = "BUY"
+                    elif report.action in ("SELL", "SHORT"):
+                        action = "SELL"
+                    else:
+                        disp = DISPLAY_NAMES.get(target_sym, target_sym.replace("_", "/"))
+                        wait_msg = (
+                            f"⏸️ <b>{disp} is currently on WAIT</b>\n\n"
+                            f"{report.to_message()}\n\n"
+                            f"<i>No high-conviction setup is active right now. If you still want to force a manual entry on {disp}, choose a direction below:</i>"
+                        )
+                        force_kb = {
+                            "inline_keyboard": [
+                                [
+                                    {"text": f"🟢 Force BUY {disp}", "callback_data": f"paper_enter:{target_sym}:BUY"},
+                                    {"text": f"🔴 Force SELL {disp}", "callback_data": f"paper_enter:{target_sym}:SELL"},
+                                ],
+                                [{"text": "📈 Crypto Menu", "callback_data": "menu_crypto"}],
+                            ]
+                        }
+                        send_telegram_message(wait_msg, chat_id=chat_id, reply_markup=force_kb)
+                        return
                     if report.action != action or not report.stop_loss or not (report.tp1 or report.take_profit):
                         report = compute_trade_levels(target_sym, action, candles)
                     curr_close = float(candles.iloc[-1]["close"])

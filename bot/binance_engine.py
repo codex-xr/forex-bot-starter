@@ -95,7 +95,7 @@ def fetch_binance_klines(
     spot_sym, fut_sym = get_binance_symbol_pair(symbol)
     target_sym = spot_sym or fut_sym or symbol
 
-    for host in ["https://data-api.binance.vision", "https://data-api.binance.vision", "https://api.binance.com", "https://api1.binance.com"]:
+    for host in ["https://data-api.binance.vision", "https://api.binance.com", "https://api1.binance.com", "https://api2.binance.com"]:
         try:
             url = f"{host}/api/v3/klines"
             res = _SESSION.get(
@@ -106,16 +106,19 @@ def fetch_binance_klines(
             if res.status_code == 200:
                 raw_data = res.json()
                 if raw_data and isinstance(raw_data, list):
+                    is_1000x = str(target_sym).startswith("1000")
+                    p_scale = 0.001 if is_1000x else 1.0
+                    v_scale = 1000.0 if is_1000x else 1.0
                     rows = []
                     for item in raw_data:
                         rows.append({
                             "time": pd.to_datetime(item[0], unit="ms", utc=True),
-                            "open": float(item[1]),
-                            "high": float(item[2]),
-                            "low": float(item[3]),
-                            "close": float(item[4]),
-                            "volume": float(item[5]),
-                            "taker_buy_base_vol": float(item[9]),
+                            "open": float(item[1]) * p_scale,
+                            "high": float(item[2]) * p_scale,
+                            "low": float(item[3]) * p_scale,
+                            "close": float(item[4]) * p_scale,
+                            "volume": float(item[5]) * v_scale,
+                            "taker_buy_base_vol": float(item[9]) * v_scale,
                             "taker_buy_quote_vol": float(item[10]),
                         })
                     df = pd.DataFrame(rows)
@@ -137,16 +140,19 @@ def fetch_binance_klines(
             if res.status_code == 200:
                 raw_data = res.json()
                 if raw_data and isinstance(raw_data, list):
+                    is_1000x = fut_sym.startswith("1000") and not (spot_sym and spot_sym.startswith("1000"))
+                    p_scale = 0.001 if is_1000x else 1.0
+                    v_scale = 1000.0 if is_1000x else 1.0
                     rows = []
                     for item in raw_data:
                         rows.append({
                             "time": pd.to_datetime(item[0], unit="ms", utc=True),
-                            "open": float(item[1]),
-                            "high": float(item[2]),
-                            "low": float(item[3]),
-                            "close": float(item[4]),
-                            "volume": float(item[5]),
-                            "taker_buy_base_vol": float(item[9]),
+                            "open": float(item[1]) * p_scale,
+                            "high": float(item[2]) * p_scale,
+                            "low": float(item[3]) * p_scale,
+                            "close": float(item[4]) * p_scale,
+                            "volume": float(item[5]) * v_scale,
+                            "taker_buy_base_vol": float(item[9]) * v_scale,
                             "taker_buy_quote_vol": float(item[10]),
                         })
                     df = pd.DataFrame(rows)

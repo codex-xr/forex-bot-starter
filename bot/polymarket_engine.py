@@ -561,7 +561,7 @@ def scan_polymarket_signals(
         topic_str = f" matching '<b>{html.escape(query)}</b>'" if clean_query else ""
         return (
             f"🔮 <b>Polymarket Prediction Scanner</b>\n\n"
-            f"No high-edge setups found{topic_str} right now in the 12¢–78¢ sweet spot.\n"
+            f"No high-edge setups found{topic_str} right now in the 38¢–74¢ sweet spot.\n"
             f"Try <code>/poly</code> for all categories or <code>/poly crypto</code>, <code>/poly trump</code>, <code>/poly sports</code>.",
             [],
         )

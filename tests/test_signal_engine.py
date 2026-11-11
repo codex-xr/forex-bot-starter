@@ -520,4 +520,30 @@ class TestRSIExhaustionGuard:
             assert report.action == "WAIT"
             assert "RSI Overbought Climax" in report.reason
 
+    def test_smart_money_preserves_order_type_and_market_price(self):
+        from bot.binance_engine import BinanceSmartMoneyMetrics
+        prices = _ohcv_close([100.0] * 100)
+        data = compute_indicators(prices)
+
+        mock_sm = BinanceSmartMoneyMetrics(
+            symbol="BTC_USD",
+            taker_buy_pct=60.0,
+            taker_sell_pct=40.0,
+            bias="BULLISH",
+            confidence_modifier=5,
+            summary_text="• Taker Volume Delta: 60% Buys",
+        )
+        with patch("bot.signal_engine._quality_gate") as mock_gate, \
+             patch("bot.binance_engine.analyze_binance_smart_money", return_value=mock_sm):
+            mock_gate.return_value = SignalReport(
+                symbol="BTCUSD", action="BUY", confidence=85, trend="Bullish",
+                entry=99.5, stop_loss=98.0, take_profit=101.0, reason="Breakout",
+                order_type="LIMIT", market_price=100.0,
+            )
+            report = _analyze_crypto_setup("BTC_USD", data, "bullish", min_confidence=50)
+            assert report.action == "BUY"
+            assert report.order_type == "LIMIT"
+            assert report.market_price == 100.0
+
+
 

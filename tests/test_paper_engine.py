@@ -659,5 +659,34 @@ class TestPendingLimitOrders:
         assert pos["id"] not in store.get_user_state(user).positions
         assert store.get_user_state(user).history[-1].exit_reason == "TP1_HIT"
 
+    def test_pre_entry_wick_on_opening_candle_never_triggers_false_sl(self):
+        import time
+        user = "wick_guard_user"
+        # Enter SELL at 79,700 with SL at 80,500
+        ok, _, pos = open_paper_trade("BTC_USD", "SELL", 79700.0, 80500.0, 78900.0, user_id=user)
+        assert ok is True
+
+        # Simulate trade is 5 minutes old (300s > 120s) inside the same 15m candle that started 6 minutes ago
+        store = _load_paper_store()
+        now_ts = time.time()
+        entry_ts = now_ts - 300
+        store.get_user_state(user).positions[pos["id"]].entry_ts = entry_ts
+        _save_paper_store(store)
+
+        candle_start = pd.to_datetime(entry_ts - 60, unit="s", utc=True).floor("15min")
+        # The candle opened at 80,600 BEFORE the user entered at 79,700, and is currently at 79,650
+        mock_df = pd.DataFrame([
+            {"time": candle_start, "open": 80600.0, "high": 80650.0, "low": 79600.0, "close": 79650.0},
+        ])
+
+        with patch("bot.paper_engine.fetch_live_candles", return_value=mock_df):
+            alerts = check_open_trades(user_id=user)
+
+        # Pre-entry high (80,650) must NOT trigger a false SL_HIT!
+        assert len(alerts) == 0
+        store = _load_paper_store()
+        assert pos["id"] in store.get_user_state(user).positions
+
+
 
 

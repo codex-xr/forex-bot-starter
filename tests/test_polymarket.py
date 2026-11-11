@@ -161,6 +161,16 @@ class TestSeparatePolymarketPaperWallet:
         assert "Will Bitcoin reach $100,000" in sum_text
         assert sum_kb is not None
 
+        # Simulate a second trade hitting SL where live price gapped way down to 0.02 -> must exit at pos.sl!
+        open_poly_trade(sig, user_id=uid)
+        mock_live_price.return_value = (0.02, False, None)
+        sl_alerts = check_open_poly_trades(user_id=uid)
+        assert len(sl_alerts) == 1
+        assert "STOP LOSS HIT" in sl_alerts[0]
+        closed_sl = _load_poly_store().get_user_state(uid).closed_trades[-1]
+        assert closed_sl.exit_price == sig.sl
+
+
 
 class TestThreeTierAccessControlAndMenus:
     def test_crypto_key_blocks_poly_and_vice_versa(self):

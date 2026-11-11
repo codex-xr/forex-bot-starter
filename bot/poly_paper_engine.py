@@ -479,10 +479,10 @@ def check_open_poly_trades(user_id: int | str | None = None) -> list[str]:
                     exit_p = 0.00
             elif curr_price >= pos.tp1:
                 trigger_reason = "TP1_HIT"
-                exit_p = max(curr_price, pos.tp1)
+                exit_p = pos.tp1
             elif curr_price <= pos.sl:
                 trigger_reason = "SL_HIT"
-                exit_p = min(curr_price, pos.sl)
+                exit_p = pos.sl
 
             if trigger_reason:
                 ok, alert_msg, _ = close_poly_trade(
@@ -550,7 +550,7 @@ def get_poly_status_report(user_id: int | str | None = None) -> tuple[str, dict 
 
         # Second-pass safety check: never show an open trade past TP1 or SL without closing it!
         if curr_p >= pos.tp1:
-            ok, alert_msg, _ = close_poly_trade(pos_id, exit_price=max(curr_p, pos.tp1), reason="TP1_HIT", user_id=uid)
+            ok, alert_msg, _ = close_poly_trade(pos_id, exit_price=pos.tp1, reason="TP1_HIT", user_id=uid)
             if ok:
                 try:
                     send_telegram_message(alert_msg, chat_id=uid)
@@ -558,7 +558,7 @@ def get_poly_status_report(user_id: int | str | None = None) -> tuple[str, dict 
                     pass
                 continue
         elif curr_p <= pos.sl:
-            ok, alert_msg, _ = close_poly_trade(pos_id, exit_price=min(curr_p, pos.sl), reason="SL_HIT", user_id=uid)
+            ok, alert_msg, _ = close_poly_trade(pos_id, exit_price=pos.sl, reason="SL_HIT", user_id=uid)
             if ok:
                 try:
                     send_telegram_message(alert_msg, chat_id=uid)

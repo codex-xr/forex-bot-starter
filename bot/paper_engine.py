@@ -300,6 +300,8 @@ _MEMORY_STORE = PaperStore()
 
 
 def _load_from_cloud() -> PaperStore | None:
+    if os.getenv("PYTEST_CURRENT_TEST") and not hasattr(requests.get, "mock_calls"):
+        return None
     url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
     token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
     if not url or not token:
@@ -325,6 +327,8 @@ def _load_from_cloud() -> PaperStore | None:
 
 
 def _save_to_cloud(store: PaperStore) -> bool:
+    if os.getenv("PYTEST_CURRENT_TEST") and not hasattr(requests.post, "mock_calls"):
+        return False
     url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
     token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
     if not url or not token:
@@ -825,8 +829,8 @@ def check_open_trades(user_id: str | int | None = None) -> list[str]:
             high_price = float(row.get("high", curr_close))
             low_price = float(row.get("low", curr_close))
 
-            # Protect brand-new trades (< 2 min old) from pre-entry wicks on the opening candle
-            if has_time_col and not is_pytest and (now_ts - pos.entry_ts) < 120:
+            # Protect trades from pre-entry wicks on the opening candle (where candle start time < trade entry time)
+            if has_time_col:
                 try:
                     row_dt = pd.to_datetime(row["time"], utc=True)
                     if row_dt < entry_dt:
@@ -849,7 +853,9 @@ def check_open_trades(user_id: str | int | None = None) -> list[str]:
                     ustate = store.get_user_state(uid)
                     if pos.id in ustate.positions:
                         ustate.positions[pos.id].status = "OPEN"
+                        ustate.positions[pos.id].entry_ts = now_ts
                     pos.status = "OPEN"
+                    pos.entry_ts = now_ts
                     _save_paper_store(store)
                     dir_emoji = "🟢 LONG" if pos.action == "BUY" else "🔴 SHORT"
                     fill_msg = (
