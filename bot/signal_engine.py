@@ -196,6 +196,22 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
             d.iloc[-1, d.columns.get_loc("rvol")] = float(d["rvol"].iloc[-2])
     else:
         d["rvol"] = 1.0
+
+    typical_price = (d["high"] + d["low"] + d["close"]) / 3.0
+    if "volume" in d.columns:
+        tp_vol = (typical_price * d["volume"]).rolling(20, min_periods=5).sum()
+        vol_sum = d["volume"].rolling(20, min_periods=5).sum().replace(0, np.nan)
+        d["vwap20"] = (tp_vol / vol_sum).fillna(d["sma20"])
+    else:
+        d["vwap20"] = d["sma20"]
+
+    if "taker_buy_base_vol" in d.columns and "volume" in d.columns:
+        tb_sum = d["taker_buy_base_vol"].rolling(3, min_periods=1).sum()
+        v_sum = d["volume"].rolling(3, min_periods=1).sum().replace(0, np.nan)
+        d["taker_buy_ratio"] = (tb_sum / v_sum).fillna(0.50)
+    else:
+        d["taker_buy_ratio"] = 0.50
+
     return d
 
 
@@ -319,8 +335,14 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
     is_overextended = (total_range > 2.8 * atr_val) or (abs(close - float(last["ema20"])) > 2.4 * atr_val)
 
     has_ema200 = "ema200" in last and pd.notna(last["ema200"])
-    macro_bull = (close >= last["ema200"] * 0.998 and last["ema50"] >= last["ema200"] * 0.995) if has_ema200 else True
-    macro_bear = (close <= last["ema200"] * 1.002 and last["ema50"] <= last["ema200"] * 1.005) if has_ema200 else True
+    macro_bull = (close >= last["ema200"] and last["ema50"] >= last["ema200"]) if has_ema200 else True
+    macro_bear = (close <= last["ema200"] and last["ema50"] <= last["ema200"]) if has_ema200 else True
+
+    range_span = prior_high - prior_low
+    range_pos = ((close - prior_low) / range_span) if range_span > 0 else 0.50
+    has_real_body = body >= 0.25 * atr_val
+    prev_bull = float(prev["close"]) >= float(prev["open"])
+    prev_bear = float(prev["close"]) <= float(prev["open"])
 
     bull_trend = macro_bull and last["ema20"] > last["ema50"] and close > last["ema20"] * 0.998
     bear_trend = macro_bear and last["ema20"] < last["ema50"] and close < last["ema20"] * 1.002
@@ -335,7 +357,10 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
             and last_adx >= 20
         )
         is_ema_bounce = (
-            prev["low"] <= last["ema20"] * 1.003
+            not is_overextended
+            and range_pos <= 0.70
+            and (has_real_body or prev_bull)
+            and prev["low"] <= last["ema20"] * 1.003
             and close >= last["ema20"]
             and last_adx >= 20
             and (check_rejection(last, "buy") or (close > open_p and body >= 0.30 * total_range))
@@ -363,7 +388,10 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
             and last_adx >= 20
         )
         is_ema_reject = (
-            prev["high"] >= last["ema20"] * 0.997
+            not is_overextended
+            and range_pos >= 0.30
+            and (has_real_body or prev_bear)
+            and prev["high"] >= last["ema20"] * 0.997
             and close <= last["ema20"]
             and last_adx >= 20
             and (check_rejection(last, "sell") or (close < open_p and body >= 0.30 * total_range))
@@ -480,6 +508,153 @@ def _smc_sweep(data: pd.DataFrame, bias: str = "neutral", symbol: str = "") -> S
             f"Price swept above resistance ({resistance:.2f}) and closed back below with rejection & volume confirmation",
         )
     return StrategySignal("SMC Sweep", "HOLD", 0, "")
+
+
+def _vwap_orderflow_surge(data: pd.DataFrame, symbol: str = "", bias: str = "neutral") -> StrategySignal:
+    """
+    Institutional Session VWAP + Binance Taker Order-Flow Delta Strategy.
+    Detects when price reclaims or rejects rolling 20-period VWAP backed by aggressive
+    Binance Taker Buy/Sell volume dominance (>= 55% buys for BUY, <= 45% buys for SELL).
+    """
+    if symbol not in CRYPTO_SYMBOLS or len(data) < 25:
+        return StrategySignal("VWAP Order-Flow Surge", "HOLD", 0, "")
+
+    last = data.iloc[-1]
+    prev = data.iloc[-2]
+    close = float(last["close"])
+    open_p = float(last["open"])
+    vwap = float(last["vwap20"]) if "vwap20" in last and pd.notna(last["vwap20"]) else float(last["ema20"])
+    ema20 = float(last["ema20"])
+    rsi_v = float(last["rsi"]) if pd.notna(last["rsi"]) else 50.0
+    adx_v = float(last["adx"]) if pd.notna(last["adx"]) else 0.0
+    rvol_v = float(last["rvol"]) if "rvol" in last and pd.notna(last["rvol"]) else 1.0
+    tb_ratio = float(last["taker_buy_ratio"]) if "taker_buy_ratio" in last and pd.notna(last["taker_buy_ratio"]) else 0.50
+    atr_val = float(last["atr"]) if "atr" in last and pd.notna(last["atr"]) and last["atr"] > 0 else max(abs(close - open_p), 1e-8)
+
+    if adx_v < 20 or abs(close - ema20) > 2.2 * atr_val:
+        return StrategySignal("VWAP Order-Flow Surge", "HOLD", 0, "")
+
+    ref = data.iloc[-21:-1]
+    prior_high = float(ref["high"].max())
+    prior_low = float(ref["low"].min())
+    span = prior_high - prior_low
+    range_pos = ((close - prior_low) / span) if span > 0 else 0.50
+
+    body = abs(close - open_p)
+    has_real_body = body >= 0.22 * atr_val
+    prev_bull = float(prev["close"]) > float(prev["open"])
+    prev_bear = float(prev["close"]) < float(prev["open"])
+
+    # Bullish VWAP Reclaim / Expansion with Taker Buy Dominance
+    if (
+        bias == "bullish"
+        and close > vwap
+        and close > ema20
+        and close > open_p
+        and (has_real_body or prev_bull)
+        and (range_pos <= 0.76 or close > prior_high)
+        and 48 <= rsi_v <= 66
+        and last["macd_hist"] > 0
+        and tb_ratio >= 0.55
+        and rvol_v >= 1.10
+    ):
+        return StrategySignal(
+            "VWAP Order-Flow Surge",
+            "BUY",
+            89,
+            f"Institutional VWAP reclaim ({vwap:.4f}) backed by {tb_ratio * 100:.0f}% Taker Buy flow, RVol {rvol_v:.1f}x",
+        )
+
+    # Bearish VWAP Rejection / Breakdown with Taker Sell Dominance
+    if (
+        bias == "bearish"
+        and close < vwap
+        and close < ema20
+        and close < open_p
+        and (has_real_body or prev_bear)
+        and (range_pos >= 0.24 or close < prior_low)
+        and 34 <= rsi_v <= 52
+        and last["macd_hist"] < 0
+        and tb_ratio <= 0.45
+        and rvol_v >= 1.10
+    ):
+        sell_pct = (1.0 - tb_ratio) * 100.0
+        return StrategySignal(
+            "VWAP Order-Flow Surge",
+            "SELL",
+            89,
+            f"Institutional VWAP breakdown ({vwap:.4f}) backed by {sell_pct:.0f}% Taker Sell flow, RVol {rvol_v:.1f}x",
+        )
+
+    return StrategySignal("VWAP Order-Flow Surge", "HOLD", 0, "")
+
+
+def _volatility_squeeze_breakout(data: pd.DataFrame, symbol: str = "", bias: str = "neutral") -> StrategySignal:
+    """
+    Bollinger Band Volatility Compression Squeeze -> Expansion Breakout Strategy.
+    Catches the beginning of explosive trend expansions right as price breaks out of a tight range.
+    """
+    if symbol not in CRYPTO_SYMBOLS or len(data) < 50:
+        return StrategySignal("Volatility Squeeze Breakout", "HOLD", 0, "")
+
+    last = data.iloc[-1]
+    prev = data.iloc[-2]
+    close = float(last["close"])
+    open_p = float(last["open"])
+    body = abs(close - open_p)
+    total_range = float(last["high"] - last["low"])
+    atr_val = float(last["atr"]) if "atr" in last and pd.notna(last["atr"]) and last["atr"] > 0 else max(total_range, 1e-8)
+
+    if total_range == 0 or total_range > 2.6 * atr_val or body < 0.35 * total_range:
+        return StrategySignal("Volatility Squeeze Breakout", "HOLD", 0, "")
+
+    bb_series = data["bb_width"].iloc[-50:-1]
+    recent_min_bb = float(data["bb_width"].iloc[-7:-1].min())
+    squeeze_threshold = float(bb_series.quantile(0.30))
+    if recent_min_bb > squeeze_threshold:
+        return StrategySignal("Volatility Squeeze Breakout", "HOLD", 0, "")
+
+    box_ref = data.iloc[-13:-1]
+    box_high = float(box_ref["high"].max())
+    box_low = float(box_ref["low"].min())
+    rsi_v = float(last["rsi"]) if pd.notna(last["rsi"]) else 50.0
+    rvol_v = float(last["rvol"]) if "rvol" in last and pd.notna(last["rvol"]) else 1.0
+
+    if (
+        bias != "bearish"
+        and close > box_high
+        and close > float(last["ema20"])
+        and close > open_p
+        and 50 <= rsi_v <= 66
+        and last["macd_hist"] > prev["macd_hist"]
+        and last["macd_hist"] > 0
+        and rvol_v >= 1.20
+    ):
+        return StrategySignal(
+            "Volatility Squeeze Breakout",
+            "BUY",
+            90,
+            f"Volatility squeeze expansion breakout above {box_high:.4f} (RVol {rvol_v:.1f}x, RSI {rsi_v:.0f})",
+        )
+
+    if (
+        bias != "bullish"
+        and close < box_low
+        and close < float(last["ema20"])
+        and close < open_p
+        and 34 <= rsi_v <= 50
+        and last["macd_hist"] < prev["macd_hist"]
+        and last["macd_hist"] < 0
+        and rvol_v >= 1.20
+    ):
+        return StrategySignal(
+            "Volatility Squeeze Breakout",
+            "SELL",
+            90,
+            f"Volatility squeeze expansion breakdown below {box_low:.4f} (RVol {rvol_v:.1f}x, RSI {rsi_v:.0f})",
+        )
+
+    return StrategySignal("Volatility Squeeze Breakout", "HOLD", 0, "")
 
 
 _FACTOR_WEIGHTS = [
@@ -631,10 +806,26 @@ def _fallback_scoring(data: pd.DataFrame) -> tuple[str, int, str, int, int]:
     if adx_v < 16 and bb_w < 0.008:
         return "WAIT", max(long_score, short_score), "Low-volatility chop squeeze (ADX < 16)", long_score, short_score
 
-    # 2. Directional Candle & Overextension Confirmation:
-    # Require candle alignment with trade direction, EMA20 support/resistance, and non-exhausted RSI
-    bull_candle_ok = close >= open_p and close >= ema20 * 0.999 and rsi_v <= 68
-    bear_candle_ok = close <= open_p and close <= ema20 * 1.001 and rsi_v >= 32
+    # 2. Directional Candle, Range Structure & Closed-Candle Confirmation:
+    # Block buying into the top 22% of a 20-bar range ceiling or selling into the bottom 22% support floor,
+    # and require closed-candle alignment when the current bar just opened (< 0.20 * ATR body).
+    prev = data.iloc[-2]
+    atr_v = float(last["atr"]) if "atr" in last and pd.notna(last["atr"]) and last["atr"] > 0 else max(abs(close - open_p), 1e-8)
+    is_tiny_live_bar = abs(close - open_p) < 0.20 * atr_v
+    prev_bull_ok = (not is_tiny_live_bar) or (float(prev["close"]) >= float(prev["open"]))
+    prev_bear_ok = (not is_tiny_live_bar) or (float(prev["close"]) <= float(prev["open"]))
+
+    ref20 = data.iloc[-21:-1] if len(data) >= 22 else data.iloc[:-1]
+    hi20 = float(ref20["high"].max()) if len(ref20) > 0 else close
+    lo20 = float(ref20["low"].min()) if len(ref20) > 0 else close
+    span20 = hi20 - lo20
+    r_pos = ((close - lo20) / span20) if span20 > 0 else 0.50
+
+    bull_range_ok = (r_pos <= 0.78) or (close > hi20)
+    bear_range_ok = (r_pos >= 0.22) or (close < lo20)
+
+    bull_candle_ok = close >= open_p and close >= ema20 * 0.999 and rsi_v <= 68 and prev_bull_ok and bull_range_ok
+    bear_candle_ok = close <= open_p and close <= ema20 * 1.001 and rsi_v >= 32 and prev_bear_ok and bear_range_ok
 
     if long_score >= 60 and long_score >= short_score + 8 and bull_candle_ok:
         return "BUY", min(long_score, 95), "; ".join(all_lr), long_score, short_score
@@ -817,6 +1008,61 @@ def _quality_gate(
     return _make_report(symbol, "WAIT", fallback_conf, trend, close, atr_val, fb_reason, data=data)
 
 
+_BTC_LEADER_CACHE: dict[str, object] = {"ts": 0.0, "data": None}
+
+
+def _check_btc_leader_veto(symbol: str, action: str) -> tuple[bool, str]:
+    """
+    Market-Leader Correlation Guard:
+    Prevents opening altcoin/memecoin BUY baskets when Bitcoin (BTC_USD) is actively dumping,
+    or altcoin/memecoin SELL baskets when Bitcoin is actively surging.
+    """
+    if symbol == "BTC_USD" or symbol not in CRYPTO_SYMBOLS or action not in ("BUY", "SELL"):
+        return False, ""
+    if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("BACKTEST_MODE"):
+        return False, ""
+
+    import time
+    now = time.time()
+    cached_ts = float(_BTC_LEADER_CACHE.get("ts") or 0.0)
+    btc_state = _BTC_LEADER_CACHE.get("data")
+
+    if not isinstance(btc_state, dict) or (now - cached_ts) > 25.0:
+        try:
+            from bot.market_data import fetch_live_candles
+            btc_raw = fetch_live_candles("BTC_USD", outputsize=90)
+            if btc_raw is not None and len(btc_raw) >= 40:
+                btc_df = compute_indicators(btc_raw)
+                b_last = btc_df.iloc[-1]
+                btc_state = {
+                    "bias": htf_bias(btc_df),
+                    "close": float(b_last["close"]),
+                    "ema20": float(b_last["ema20"]),
+                    "rsi": float(b_last["rsi"]) if pd.notna(b_last["rsi"]) else 50.0,
+                    "macd_hist": float(b_last["macd_hist"]) if pd.notna(b_last["macd_hist"]) else 0.0,
+                }
+                _BTC_LEADER_CACHE["ts"] = now
+                _BTC_LEADER_CACHE["data"] = btc_state
+        except Exception:
+            return False, ""
+
+    if not isinstance(btc_state, dict):
+        return False, ""
+
+    b_bias = str(btc_state.get("bias") or "neutral")
+    b_close = float(btc_state.get("close") or 0.0)
+    b_ema20 = float(btc_state.get("ema20") or 0.0)
+    b_rsi = float(btc_state.get("rsi") or 50.0)
+    b_macd = float(btc_state.get("macd_hist") or 0.0)
+
+    if action == "BUY" and b_bias == "bearish" and b_rsi <= 43.0 and b_close < b_ema20 * 0.997 and b_macd < 0:
+        return True, f"BTC Market-Leader Veto: Bitcoin is actively dumping (Bearish, RSI {b_rsi:.0f}) — Altcoin BUY blocked"
+    if action == "SELL" and b_bias == "bullish" and b_rsi >= 57.0 and b_close > b_ema20 * 1.003 and b_macd > 0:
+        return True, f"BTC Market-Leader Veto: Bitcoin is actively surging (Bullish, RSI {b_rsi:.0f}) — Altcoin SELL blocked"
+
+    return False, ""
+
+
 def _analyze_crypto_setup(
     symbol: str,
     data: pd.DataFrame,
@@ -839,6 +1085,8 @@ def _analyze_crypto_setup(
         _smc_sweep(data, bias, symbol),
         _mean_reversion(data, symbol, bias),
         _crypto_momentum_surge(data, symbol),
+        _vwap_orderflow_surge(data, symbol, bias),
+        _volatility_squeeze_breakout(data, symbol, bias),
         _news_catalyst_momentum(data, symbol, bias),
     ]
 
@@ -874,6 +1122,20 @@ def _analyze_crypto_setup(
                 stop_loss=None,
                 take_profit=None,
                 reason=f"⛔ RSI Overbought Climax ({curr_rsi:.0f} ≥ 68) — Long blocked to protect against buying extended top",
+                smart_money=sm_metrics.summary_text if sm_metrics else None,
+            )
+
+        btc_vetoed, btc_reason = _check_btc_leader_veto(symbol, report.action)
+        if btc_vetoed:
+            return SignalReport(
+                symbol=report.symbol,
+                action="WAIT",
+                confidence=42,
+                trend=report.trend,
+                entry=None,
+                stop_loss=None,
+                take_profit=None,
+                reason=f"⛔ {btc_reason}",
                 smart_money=sm_metrics.summary_text if sm_metrics else None,
             )
 

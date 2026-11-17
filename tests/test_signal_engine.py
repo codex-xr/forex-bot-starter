@@ -545,5 +545,19 @@ class TestRSIExhaustionGuard:
             assert report.order_type == "LIMIT"
             assert report.market_price == 100.0
 
+    def test_vwap_orderflow_and_volatility_squeeze_strategies_run(self):
+        from bot.signal_engine import _vwap_orderflow_surge, _volatility_squeeze_breakout
+        prices = _ohcv_close([100.0 + i * 0.15 for i in range(100)])
+        prices["volume"] = [1000.0] * 97 + [2200.0, 2500.0, 2800.0]
+        prices["taker_buy_base_vol"] = [600.0] * 97 + [1500.0, 1750.0, 1950.0]
+        data = compute_indicators(prices)
+        assert "vwap20" in data.columns
+        assert "taker_buy_ratio" in data.columns
+        s_vwap = _vwap_orderflow_surge(data, "BTC_USD", "bullish")
+        s_sqz = _volatility_squeeze_breakout(data, "BTC_USD", "bullish")
+        assert s_vwap.action in ("BUY", "SELL", "HOLD")
+        assert s_sqz.action in ("BUY", "SELL", "HOLD")
+
+
 
 
