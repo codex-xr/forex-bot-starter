@@ -268,10 +268,19 @@ class TestReports:
         open_paper_trade("ETH_USD", "BUY", 3000.0, 2850.0, 3300.0)
         close_paper_trade("ETH_USD", 2850.0, reason="SL_HIT")
 
+        # Also open an ongoing trade that is still running (DOGE)
+        open_paper_trade("DOGE_USD", "BUY", 0.20, 0.18, 0.25)
+
         summary = get_daily_summary_report()
         assert "END-OF-DAY PERFORMANCE SUMMARY" in summary
         assert "Win Rate:" in summary
         assert "66.7%" in summary or "2</b> Wins / <b>1</b> Losses" in summary
+        assert "Closed Trades Today (3):" in summary
+        assert "Taken:" in summary
+        assert "Ongoing Trades Still On (1):" in summary
+        assert "DOGEUSD" in summary
+        assert "ONGOING" in summary
+        assert "PnL So Far:" in summary
         assert "Top Performing Pairs:" in summary
         assert "SOL" in summary
         assert "BTC" in summary

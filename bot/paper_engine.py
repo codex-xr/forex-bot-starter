@@ -1096,14 +1096,39 @@ def get_status_report(user_id: str | int | None = None) -> tuple[str, dict | Non
     return "\n".join(lines), keyboard
 
 
+def _fmt_time_taken(entry_time: str, today_str: str = "") -> str:
+    if not entry_time:
+        return "N/A"
+    s = str(entry_time).strip()
+    if today_str and s.startswith(today_str):
+        return s[len(today_str):].strip()
+    return s
+
+
+def _resolve_live_price_for_pos(pos: PaperPosition) -> float:
+    curr_price = pos.entry_price
+    cached = _LATEST_PRICE_CACHE.get(pos.symbol)
+    if cached and (time.time() - cached[0]) < 15.0:
+        return cached[1]
+    try:
+        if not os.getenv("PYTEST_CURRENT_TEST") or hasattr(fetch_live_candles, "mock_calls"):
+            df = fetch_live_candles(pos.symbol)
+            if df is not None and not df.empty:
+                curr_price = float(df.iloc[-1]["close"])
+                _LATEST_PRICE_CACHE[pos.symbol] = (time.time(), curr_price)
+    except Exception:
+        pass
+    return curr_price
+
+
 def get_daily_summary_report(target_date: str | None = None, user_id: str | int | None = None) -> str:
     """
-    Builds the end-of-day summary report aggregating closed trades for the day for the specified user:
-    - Full Day's Realized PnL ($ and %)
+    Builds the end-of-day summary report aggregating closed and ongoing trades for the day:
+    - Full Day's Realized PnL ($ and %) & Floating PnL
     - Win Rate & Trade Count
-    - Best Performing Pairs (Top Winners)
-    - Worst Performing Pairs (Top Losers)
-    - Open positions still running
+    - Every Trade Taken Today (Time Taken, Result, and PnL)
+    - Ongoing Trades Still Running (Time Taken and PnL So Far)
+    - Best & Worst Performing Pairs
     """
     check_open_trades(user_id=user_id)
     store = _load_paper_store()
@@ -1111,8 +1136,12 @@ def get_daily_summary_report(target_date: str | None = None, user_id: str | int 
 
     today_str = target_date or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 
-    # Filter trades closed today for this user
-    day_trades = [h for h in ustate.history if h.date_str == today_str]
+    # Filter trades closed or taken today for this user
+    day_trades = [
+        h for h in ustate.history
+        if h.date_str == today_str or (h.entry_time and h.entry_time.startswith(today_str))
+    ]
+    open_positions = list(ustate.positions.values())
 
     lines = [
         f"📅 <b>END-OF-DAY PERFORMANCE SUMMARY</b>",
@@ -1120,11 +1149,11 @@ def get_daily_summary_report(target_date: str | None = None, user_id: str | int 
         "━━━━━━━━━━━━━━━━━━━━",
     ]
 
-    if not day_trades:
-        lines.append("ℹ️ <i>No trades were closed on this day yet.</i>")
+    if not day_trades and not open_positions:
+        lines.append("ℹ️ <i>No trades were taken or closed on this day yet.</i>")
         lines.append("")
         lines.append(f"💼 <b>Current Virtual Balance:</b> <code>${ustate.settings.virtual_balance:,.2f}</code>")
-        lines.append(f"⚡ <b>Active Positions Running:</b> <code>{len(ustate.positions)}</code>")
+        lines.append(f"⚡ <b>Active Positions Running:</b> <code>0</code>")
         return "\n".join(lines)
 
     total_closed = len(day_trades)
@@ -1136,43 +1165,98 @@ def get_daily_summary_report(target_date: str | None = None, user_id: str | int 
     pnl_sign = "+" if day_pnl_usd >= 0 else ""
     pnl_icon = "🟢" if day_pnl_usd >= 0 else "🔴"
 
-    # Group PnL by symbol/pair to find best and worst pairs
-    pair_pnl: dict[str, float] = {}
-    for t in day_trades:
-        sym = t.display_symbol
-        pair_pnl[sym] = pair_pnl.get(sym, 0.0) + t.pnl_usd
-
-    sorted_pairs = sorted(pair_pnl.items(), key=lambda x: x[1], reverse=True)
-    best_pairs = [p for p in sorted_pairs if p[1] > 0]
-    worst_pairs = [p for p in sorted_pairs if p[1] <= 0]
-
     lines.append(f"💰 <b>Daily Realized PnL:</b> {pnl_icon} <b>{pnl_sign}${day_pnl_usd:,.2f}</b>")
     lines.append(f"💼 <b>Current Balance:</b> <code>${ustate.settings.virtual_balance:,.2f}</code>")
     lines.append(f"🎯 <b>Win Rate:</b> <code>{win_rate:.1f}%</code> (<b>{len(wins)}</b> Wins / <b>{len(losses)}</b> Losses)")
-    lines.append(f"📊 <b>Total Trades Completed:</b> <code>{total_closed}</code>")
+    lines.append(f"📊 <b>Total Trades Today:</b> <code>{total_closed + len(open_positions)}</code> (<code>{total_closed}</code> Closed | <code>{len(open_positions)}</code> Ongoing)")
     lines.append("")
 
-    # Best performing pairs
-    lines.append("🌟 <b>Top Performing Pairs:</b>")
-    if best_pairs:
-        for sym, pnl in best_pairs[:3]:
-            lines.append(f"   • <b>{sym}</b>: 🟢 <b>+${pnl:,.2f}</b>")
-    else:
-        lines.append("   • <i>None with positive PnL today</i>")
+    # 1. List all closed trades taken today with Time Taken + Result + PnL
+    if day_trades:
+        lines.append(f"📋 <b>Closed Trades Today ({total_closed}):</b>")
+        for idx, t in enumerate(day_trades, 1):
+            t_taken = _fmt_time_taken(t.entry_time, today_str)
+            lev_tag = f" {t.leverage:g}x" if getattr(t, "leverage", 1.0) > 1.0 else ""
+            t_sign = "+" if t.pnl_usd >= 0 else ""
+            if t.pnl_usd > 0:
+                res_badge = f"✅ WIN ({t.exit_reason})"
+                p_icon = "🟢"
+            else:
+                res_badge = f"🛑 LOSS ({t.exit_reason})"
+                p_icon = "🔴"
+            lines.append(
+                f"   <b>{idx}. {t.display_symbol}</b> ({t.action}{lev_tag}) — <b>{res_badge}</b>\n"
+                f"      ⏰ Taken: <code>{t_taken}</code> | <code>{_fmt_price(t.entry_price)} → {_fmt_price(t.exit_price)}</code>\n"
+                f"      💵 Result: {p_icon} <b>{t_sign}${t.pnl_usd:,.2f} ({t_sign}{t.pnl_pct:.2f}%)</b>"
+            )
+        lines.append("")
 
-    lines.append("")
+    # 2. List all ongoing trades still running with Time Taken + PnL So Far
+    if open_positions:
+        lines.append(f"⏳ <b>Ongoing Trades Still On ({len(open_positions)}):</b>")
+        total_floating_usd = 0.0
+        for idx, pos in enumerate(open_positions, 1):
+            t_taken = _fmt_time_taken(pos.entry_time, today_str)
+            lev_tag = f" {pos.leverage:g}x" if getattr(pos, "leverage", 1.0) > 1.0 else ""
+            curr_price = _resolve_live_price_for_pos(pos)
+            if getattr(pos, "status", "OPEN") == "PENDING_LIMIT":
+                lines.append(
+                    f"   <b>{idx}. {pos.display_symbol}</b> ({pos.action}{lev_tag}) — ⏳ <b>PENDING LIMIT</b>\n"
+                    f"      ⏰ Taken: <code>{t_taken}</code> | Limit: <code>{_fmt_price(pos.entry_price)}</code> (Now: <code>{_fmt_price(curr_price)}</code>)\n"
+                    f"      📊 PnL So Far: <code>$0.00 (Waiting for fill)</code>"
+                )
+            else:
+                if pos.action == "BUY":
+                    fl_usd = pos.units * (curr_price - pos.entry_price)
+                else:
+                    fl_usd = pos.units * (pos.entry_price - curr_price)
+                fl_pct = (fl_usd / pos.size_usd) * 100.0 if pos.size_usd > 0 else 0.0
+                total_floating_usd += fl_usd
+                fl_sign = "+" if fl_usd >= 0 else ""
+                fl_icon = "🟢" if fl_usd >= 0 else "🔴"
+                lines.append(
+                    f"   <b>{idx}. {pos.display_symbol}</b> ({pos.action}{lev_tag}) — ⚡ <b>ONGOING</b>\n"
+                    f"      ⏰ Taken: <code>{t_taken}</code> | <code>{_fmt_price(pos.entry_price)} → {_fmt_price(curr_price)}</code>\n"
+                    f"      📊 PnL So Far: {fl_icon} <b>{fl_sign}${fl_usd:,.2f} ({fl_sign}{fl_pct:.2f}%)</b>"
+                )
+        tot_fl_sign = "+" if total_floating_usd >= 0 else ""
+        tot_fl_icon = "🟢" if total_floating_usd >= 0 else "🔴"
+        lines.append(f"   📈 <b>Total Ongoing PnL So Far:</b> {tot_fl_icon} <b>{tot_fl_sign}${total_floating_usd:,.2f}</b>")
+        lines.append("")
 
-    # Worst performing pairs
-    lines.append("⚠️ <b>Underperforming Pairs:</b>")
-    if worst_pairs:
-        for sym, pnl in worst_pairs[-3:]:
-            lines.append(f"   • <b>{sym}</b>: 🔴 <b>-${abs(pnl):,.2f}</b>")
-    else:
-        lines.append("   • <i>None with negative PnL today (100% Green!)</i>")
+    if day_trades:
+        # Group PnL by symbol/pair to find best and worst pairs
+        pair_pnl: dict[str, float] = {}
+        for t in day_trades:
+            sym = t.display_symbol
+            pair_pnl[sym] = pair_pnl.get(sym, 0.0) + t.pnl_usd
 
-    lines.append("")
+        sorted_pairs = sorted(pair_pnl.items(), key=lambda x: x[1], reverse=True)
+        best_pairs = [p for p in sorted_pairs if p[1] > 0]
+        worst_pairs = [p for p in sorted_pairs if p[1] <= 0]
+
+        # Best performing pairs
+        lines.append("🌟 <b>Top Performing Pairs:</b>")
+        if best_pairs:
+            for sym, pnl in best_pairs[:3]:
+                lines.append(f"   • <b>{sym}</b>: 🟢 <b>+${pnl:,.2f}</b>")
+        else:
+            lines.append("   • <i>None with positive PnL today</i>")
+
+        lines.append("")
+
+        # Worst performing pairs
+        lines.append("⚠️ <b>Underperforming Pairs:</b>")
+        if worst_pairs:
+            for sym, pnl in worst_pairs[-3:]:
+                lines.append(f"   • <b>{sym}</b>: 🔴 <b>-${abs(pnl):,.2f}</b>")
+        else:
+            lines.append("   • <i>None with negative PnL today (100% Green!)</i>")
+
+        lines.append("")
+
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"⚡ <b>Positions Still Running:</b> <code>{len(ustate.positions)}</code>")
+    lines.append(f"⚡ <b>Positions Still Running:</b> <code>{len(open_positions)}</code>")
     lines.append("<i>Send <code>/status</code> to inspect active positions.</i>")
 
     return "\n".join(lines)

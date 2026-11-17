@@ -697,7 +697,11 @@ def get_poly_daily_summary_report(
     ustate = store.get_user_state(uid)
 
     today_str = (target_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")).strip()
-    day_trades = [t for t in ustate.closed_trades if t.exit_date == today_str]
+    day_trades = [
+        t for t in ustate.closed_trades
+        if t.exit_date == today_str or (t.entry_time and t.entry_time.startswith(today_str))
+    ]
+    open_positions = list(ustate.positions.values())
 
     kb = {
         "inline_keyboard": [
@@ -722,7 +726,7 @@ def get_poly_daily_summary_report(
         "━━━━━━━━━━━━━━━━━━━━",
     ]
 
-    if not day_trades:
+    if not day_trades and not open_positions:
         all_closed = ustate.closed_trades
         all_wins = [t for t in all_closed if t.pnl_usd >= 0]
         all_losses = [t for t in all_closed if t.pnl_usd < 0]
@@ -730,11 +734,11 @@ def get_poly_daily_summary_report(
         all_pnl = sum(t.pnl_usd for t in all_closed)
         all_sign = "+" if all_pnl >= 0 else ""
 
-        lines.append("ℹ️ <i>No predictions were closed on this day yet.</i>")
+        lines.append("ℹ️ <i>No predictions were taken or closed on this day yet.</i>")
         lines.append("")
         lines.append(f"💼 <b>Current Prediction Balance:</b> <code>${ustate.virtual_balance:,.2f}</code>")
         lines.append(f"💵 <b>Bet Amount Per Pick:</b> <code>${ustate.bet_size_usd:,.2f}</code>")
-        lines.append(f"⚡ <b>Active Predictions Running:</b> <code>{len(ustate.positions)}</code>")
+        lines.append(f"⚡ <b>Active Predictions Running:</b> <code>0</code>")
         if all_closed:
             lines.append("")
             lines.append("🏆 <b>All-Time Prediction Record:</b>")
@@ -758,40 +762,80 @@ def get_poly_daily_summary_report(
     lines.append(f"💰 <b>Daily Realized PnL:</b> {pnl_icon} <b>{pnl_sign}${day_pnl_usd:,.2f}</b>")
     lines.append(f"💼 <b>Current Balance:</b> <code>${ustate.virtual_balance:,.2f}</code>")
     lines.append(f"🎯 <b>Win Rate:</b> <code>{win_rate:.1f}%</code> (<b>{len(wins)}</b> Wins / <b>{len(losses)}</b> Losses)")
-    lines.append(f"📊 <b>Predictions Completed:</b> <code>{total_closed}</code> (TP1: <code>{tp1_hits}</code> | $1 Wins: <code>{res_wins}</code> | SL: <code>{sl_hits}</code>)")
+    lines.append(f"📊 <b>Predictions Today:</b> <code>{total_closed + len(open_positions)}</code> (<code>{total_closed}</code> Closed | <code>{len(open_positions)}</code> Ongoing)")
     lines.append("")
+
+    if day_trades:
+        lines.append(f"📋 <b>Closed Predictions Today ({total_closed}):</b>")
+        for idx, t in enumerate(day_trades, 1):
+            short_q = t.question[:42] + "..." if len(t.question) > 42 else t.question
+            t_taken = t.entry_time[len(today_str):].strip() if (t.entry_time and t.entry_time.startswith(today_str)) else (t.entry_time or "N/A")
+            t_sign = "+" if t.pnl_usd >= 0 else ""
+            res_badge = f"✅ WIN ({t.exit_reason})" if t.pnl_usd > 0 else f"🛑 LOSS ({t.exit_reason})"
+            p_icon = "🟢" if t.pnl_usd > 0 else "🔴"
+            lines.append(
+                f"   <b>{idx}. {html.escape(short_q)}</b> (BUY {t.side}) — <b>{res_badge}</b>\n"
+                f"      ⏰ Taken: <code>{html.escape(t_taken)}</code> | <code>{t.entry_price * 100:.1f}¢ → {t.exit_price * 100:.1f}¢</code>\n"
+                f"      💵 Result: {p_icon} <b>{t_sign}${t.pnl_usd:,.2f} ({t_sign}{t.pnl_pct:.1f}%)</b>"
+            )
+        lines.append("")
+
+    if open_positions:
+        lines.append(f"⏳ <b>Ongoing Predictions Still On ({len(open_positions)}):</b>")
+        total_floating_pnl = 0.0
+        for idx, pos in enumerate(open_positions, 1):
+            short_q = pos.question[:42] + "..." if len(pos.question) > 42 else pos.question
+            t_taken = pos.entry_time[len(today_str):].strip() if (pos.entry_time and pos.entry_time.startswith(today_str)) else (pos.entry_time or "N/A")
+            live_p, _, _ = get_live_share_price(pos.market_id, pos.side)
+            curr_p = live_p if (live_p is not None and live_p > 0) else pos.entry_price
+            fl_usd = pos.shares * (curr_p - pos.entry_price)
+            fl_pct = ((curr_p - pos.entry_price) / pos.entry_price) * 100.0 if pos.entry_price > 0 else 0.0
+            total_floating_pnl += fl_usd
+            fl_sign = "+" if fl_usd >= 0 else ""
+            fl_icon = "🟢" if fl_usd >= 0 else "🔴"
+            lines.append(
+                f"   <b>{idx}. {html.escape(short_q)}</b> (BUY {pos.side}) — ⚡ <b>ONGOING</b>\n"
+                f"      ⏰ Taken: <code>{html.escape(t_taken)}</code> | <code>{pos.entry_price * 100:.1f}¢ → {curr_p * 100:.1f}¢</code>\n"
+                f"      📊 PnL So Far: {fl_icon} <b>{fl_sign}${fl_usd:,.2f} ({fl_sign}{fl_pct:.1f}%)</b>"
+            )
+        tot_fl_sign = "+" if total_floating_pnl >= 0 else ""
+        tot_fl_icon = "🟢" if total_floating_pnl >= 0 else "🔴"
+        lines.append(f"   📈 <b>Total Ongoing PnL So Far:</b> {tot_fl_icon} <b>{tot_fl_sign}${total_floating_pnl:,.2f}</b>")
+        lines.append("")
 
     # Sort winners and losers
     sorted_wins = sorted(wins, key=lambda t: t.pnl_usd, reverse=True)
     sorted_losses = sorted(losses, key=lambda t: t.pnl_usd)
 
-    lines.append("🌟 <b>Top Winning Predictions Today:</b>")
-    if sorted_wins:
-        for t in sorted_wins[:4]:
-            short_q = t.question[:40] + "..." if len(t.question) > 40 else t.question
-            lines.append(
-                f"   • <b>{html.escape(short_q)}</b> (BUY {t.side})\n"
-                f"     <code>{t.entry_price * 100:.1f}¢ → {t.exit_price * 100:.1f}¢</code> | 🟢 <b>+${t.pnl_usd:,.2f}</b> (+{t.pnl_pct:.1f}% | {t.exit_reason})"
-            )
-    else:
-        lines.append("   • <i>None with positive PnL today</i>")
+    if day_trades:
+        lines.append("🌟 <b>Top Winning Predictions Today:</b>")
+        if sorted_wins:
+            for t in sorted_wins[:4]:
+                short_q = t.question[:40] + "..." if len(t.question) > 40 else t.question
+                lines.append(
+                    f"   • <b>{html.escape(short_q)}</b> (BUY {t.side})\n"
+                    f"     <code>{t.entry_price * 100:.1f}¢ → {t.exit_price * 100:.1f}¢</code> | 🟢 <b>+${t.pnl_usd:,.2f}</b> (+{t.pnl_pct:.1f}% | {t.exit_reason})"
+                )
+        else:
+            lines.append("   • <i>None with positive PnL today</i>")
 
-    lines.append("")
+        lines.append("")
 
-    lines.append("⚠️ <b>Underperforming Predictions Today:</b>")
-    if sorted_losses:
-        for t in sorted_losses[:3]:
-            short_q = t.question[:40] + "..." if len(t.question) > 40 else t.question
-            lines.append(
-                f"   • <b>{html.escape(short_q)}</b> (BUY {t.side})\n"
-                f"     <code>{t.entry_price * 100:.1f}¢ → {t.exit_price * 100:.1f}¢</code> | 🔴 <b>-${abs(t.pnl_usd):,.2f}</b> ({t.pnl_pct:.1f}% | {t.exit_reason})"
-            )
-    else:
-        lines.append("   • <i>None with negative PnL today (100% Green!)</i>")
+        lines.append("⚠️ <b>Underperforming Predictions Today:</b>")
+        if sorted_losses:
+            for t in sorted_losses[:3]:
+                short_q = t.question[:40] + "..." if len(t.question) > 40 else t.question
+                lines.append(
+                    f"   • <b>{html.escape(short_q)}</b> (BUY {t.side})\n"
+                    f"     <code>{t.entry_price * 100:.1f}¢ → {t.exit_price * 100:.1f}¢</code> | 🔴 <b>-${abs(t.pnl_usd):,.2f}</b> ({t.pnl_pct:.1f}% | {t.exit_reason})"
+                )
+        else:
+            lines.append("   • <i>None with negative PnL today (100% Green!)</i>")
 
-    lines.append("")
+        lines.append("")
+
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"⚡ <b>Predictions Still Running:</b> <code>{len(ustate.positions)}</code>")
+    lines.append(f"⚡ <b>Predictions Still Running:</b> <code>{len(open_positions)}</code>")
     lines.append("<i>Send <code>/pstatus</code> to inspect active predictions.</i>")
 
     return "\n".join(lines).strip(), kb
