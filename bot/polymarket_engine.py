@@ -6,6 +6,72 @@ import time
 import requests
 
 GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
+GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
+
+_SECTION_TAG_MAP: dict[str, tuple[list[str], str, list[str]]] = {
+    "crypto": (
+        ["crypto"],
+        "Crypto",
+        [
+            "bitcoin", "btc", "ethereum", "eth", "solana", "sol", "crypto", "xrp",
+            "doge", "bnb", "fdv", "token", "airdrop", "coinbase", "binance",
+            "hyperliquid", "tether", "usdt", "cardano", "avalanche", "sui", "pepe",
+        ],
+    ),
+    "sports": (
+        ["sports"],
+        "Sports",
+        [
+            "vs.", "vs ", "nba", "nfl", "premier league", "ufc", "champions league",
+            "win on", "match", "arsenal", "real madrid", "barcelona", "liverpool",
+            "lakers", "celtics", "cup", "f1", "grand prix", "tennis", "mlb", "nhl",
+            "la liga", "serie a", "bundesliga", "both teams to score", "spread:", "o/u",
+            "ligue 1", "world cup", "super bowl", "playoffs", "fc ", "sc ", "united",
+        ],
+    ),
+    "trump": (
+        ["trump", "politics"],
+        "Trump & Politics",
+        [
+            "trump", "donald trump", "maga", "white house", "truth social",
+            "melania", "barron", "eric trump", "donald trump jr",
+        ],
+    ),
+    "politics": (
+        ["politics", "trump"],
+        "Politics & Geopolitics",
+        [
+            "trump", "election", "president", "senate", "congress", "governor",
+            "prime minister", "tariffs", "ceasefire", "ukraine", "israel", "china",
+            "iran", "russia", "zelensky", "putin", "netanyahu", "parliament",
+        ],
+    ),
+    "macro": (
+        ["finance", "economy"],
+        "Macro & Finance",
+        [
+            "fed", "interest rate", "inflation", "cpi", "recession", "gdp",
+            "s&p", "nasdaq", "gold", "oil", "tesla", "nvidia", "apple", "bps",
+        ],
+    ),
+}
+
+
+def _resolve_section_key(query: str) -> str | None:
+    q = query.strip().lower()
+    if not q:
+        return None
+    if q in ("crypto", "cryptos", "coin", "coins", "defi", "web3"):
+        return "crypto"
+    if q in ("sports", "sport", "football", "soccer", "nba", "nfl", "ufc", "mma", "tennis", "f1", "mlb", "nhl"):
+        return "sports"
+    if q in ("trump", "donald trump", "maga"):
+        return "trump"
+    if q in ("politics", "political", "election", "elections", "geopolitics"):
+        return "politics"
+    if q in ("macro", "finance", "economy", "fed", "stocks"):
+        return "macro"
+    return None
 
 # Cache recent signals by user_id and market_id for instant 1-tap paper trading
 _RECENT_SIGNALS_BY_USER: dict[str, list["PolymarketSignal"]] = {}
@@ -108,14 +174,19 @@ def _parse_json_list(val: object) -> list:
 
 
 def _detect_category(question: str, raw_market: dict) -> str:
-    q = question.lower()
     cat_field = str(raw_market.get("category") or "").strip()
     if cat_field and cat_field.lower() not in ("other", "general", "none"):
-        return cat_field.title()
+        return cat_field
 
-    if any(k in q for k in ("bitcoin", "btc", "ethereum", "eth", "solana", "sol", "crypto", "xrp", "doge", "fdv", "airdrop", "token")):
+    ev_title = ""
+    events = raw_market.get("events")
+    if isinstance(events, list) and events and isinstance(events[0], dict):
+        ev_title = str(events[0].get("title") or "")
+    q = f"{question} {ev_title}".lower()
+
+    if any(k in q for k in ("bitcoin", "btc", "ethereum", "eth", "solana", "sol", "crypto", "xrp", "doge", "fdv", "airdrop", "token", "hyperliquid", "bnb", "sui")):
         return "Crypto"
-    if any(k in q for k in ("vs.", "vs ", "nba", "nfl", "premier league", "ufc", "champions league", "win on", "match", "arsenal", "real madrid", "lakers", "celtics", "cup", "f1", "grand prix")):
+    if any(k in q for k in ("vs.", "vs ", "nba", "nfl", "premier league", "ufc", "champions league", "win on", "match", "arsenal", "real madrid", "lakers", "celtics", "cup", "f1", "grand prix", "both teams to score", "spread:", "o/u")):
         return "Sports"
     if any(k in q for k in ("trump", "election", "president", "senate", "congress", "governor", "prime minister", "tariffs", "ceasefire", "ukraine", "israel", "china", "iran")):
         return "Politics & Geopolitics"
@@ -204,19 +275,86 @@ def _get_crypto_spot_bias(question: str) -> tuple[str | None, str]:
 def fetch_raw_polymarket_markets(limit: int = 100, query: str = "") -> list[dict]:
     """
     Fetches live, open, liquid markets from Polymarket's public Gamma API.
-    Includes a short 20-second memory cache for sub-second repeat responsiveness.
+    When `query` targets a specific section (e.g. 'crypto', 'sports', 'trump', 'politics', 'macro')
+    or topic keyword, queries Polymarket's `/events` endpoint by `tag_slug` so section scans
+    have deep, dedicated market coverage.
     """
-    cache_key = f"{limit}:{query.strip().lower()}"
+    clean_q = query.strip().lower()
+    cache_key = f"{limit}:{clean_q}"
     now = time.time()
     if cache_key in _MARKET_CACHE:
         ts, cached_list = _MARKET_CACHE[cache_key]
         if now - ts < 20.0 and cached_list:
             return cached_list
 
+    section_key = _resolve_section_key(clean_q)
+    if not section_key and clean_q:
+        # Check if clean_q is a sub-keyword of any section (e.g. 'bitcoin' -> 'crypto', 'nba' -> 'sports')
+        for sec_k, (_, _, kw_list) in _SECTION_TAG_MAP.items():
+            if any(clean_q in kw or kw in clean_q for kw in kw_list):
+                section_key = sec_k
+                break
+
+    collected: list[dict] = []
+    seen_market_ids: set[str] = set()
+
+    # 1. If a section is targeted, fetch dedicated section events via tag_slug from /events
+    if section_key and section_key in _SECTION_TAG_MAP:
+        tag_slugs, sec_category, _ = _SECTION_TAG_MAP[section_key]
+        for tag in tag_slugs:
+            try:
+                ev_resp = requests.get(
+                    GAMMA_EVENTS_URL,
+                    params={
+                        "active": "true",
+                        "closed": "false",
+                        "tag_slug": tag,
+                        "limit": 100,
+                        "order": "volume24hr",
+                        "ascending": "false",
+                    },
+                    headers={"Accept": "application/json", "User-Agent": "CryptoPredictionBot/2.0"},
+                    timeout=5.5,
+                )
+                if ev_resp.status_code == 200:
+                    ev_list = ev_resp.json()
+                    if isinstance(ev_list, list):
+                        for ev in ev_list:
+                            if not isinstance(ev, dict):
+                                continue
+                            ev_title = str(ev.get("title") or "").strip()
+                            ev_slug = str(ev.get("slug") or "").strip()
+                            ev_vol24 = float(ev.get("volume24hr") or ev.get("volume") or 0.0)
+                            ev_liq = float(ev.get("liquidity") or 0.0)
+                            for m in ev.get("markets") or []:
+                                if not isinstance(m, dict):
+                                    continue
+                                mid = str(m.get("id") or "").strip()
+                                if not mid or mid in seen_market_ids:
+                                    continue
+                                seen_market_ids.add(mid)
+                                m_copy = dict(m)
+                                if not m_copy.get("events"):
+                                    m_copy["events"] = [{"title": ev_title, "slug": ev_slug}]
+                                if not m_copy.get("category"):
+                                    m_copy["category"] = sec_category
+                                if not m_copy.get("liquidityNum") and not m_copy.get("liquidity") and ev_liq > 0:
+                                    m_copy["liquidityNum"] = min(ev_liq, 25000.0)
+                                if not m_copy.get("volume24hr") and not m_copy.get("volumeNum") and not m_copy.get("volume") and ev_vol24 > 0:
+                                    m_copy["volume24hr"] = min(ev_vol24 * 0.25, 25000.0)
+                                collected.append(m_copy)
+            except Exception as exc:
+                print(f"[PolymarketEngine] Section '{tag}' events fetch error: {exc}")
+
+        if collected:
+            _MARKET_CACHE[cache_key] = (now, collected)
+            return collected
+
+    # 2. General top-volume markets feed (or fallback if section events endpoint unavailable)
     params = {
         "active": "true",
         "closed": "false",
-        "limit": max(limit, 80),
+        "limit": max(limit, 100),
         "order": "volume24hr",
         "ascending": "false",
     }
@@ -370,11 +508,16 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
         if 0.52 <= p_cand <= 0.74:
             score += 8.0
             cand_reasons.append(f"Consensus leader ({p_cand * 100:.0f}¢) with smart-money support")
+            if d_mom == 0.0 and w_mom == 0.0 and vol_24h >= 1500:
+                score += 4.5
         else:
             # 38c - 52c breakout contender requires strong daily + weekly surge
             if d_mom >= 0.025 and w_mom >= 0.02:
                 score += 7.0
                 cand_reasons.append(f"Breakout contender surging +{d_mom * 100:.1f}¢ (24h)")
+            elif d_mom >= 0.015 and vol_24h >= 5000:
+                score += 6.5
+                cand_reasons.append(f"Breakout contender gaining +{d_mom * 100:.1f}¢ on strong volume")
             else:
                 continue
 
@@ -519,19 +662,36 @@ def scan_polymarket_signals(
         )
 
     clean_query = query.strip().lower()
+    section_key = _resolve_section_key(clean_query)
     candidates: list[PolymarketSignal] = []
 
     for m in raw_markets:
         q_text = str(m.get("question") or "")
         cat_text = str(m.get("category") or "")
+        grp_text = str(m.get("groupItemTitle") or "")
         ev_title = ""
         events = m.get("events")
         if isinstance(events, list) and events and isinstance(events[0], dict):
             ev_title = str(events[0].get("title") or "")
+
+        det_cat = _detect_category(q_text, m)
+        combined_text = f"{q_text} {cat_text} {det_cat} {ev_title} {grp_text}".lower()
+
         if clean_query:
-            combined_text = f"{q_text} {cat_text} {ev_title}".lower()
-            if clean_query not in combined_text:
-                continue
+            if section_key == "trump":
+                # Strictly require Trump-related event/question for '/poly trump'
+                trump_kws = _SECTION_TAG_MAP["trump"][2]
+                if not any(k in f"{q_text} {ev_title} {grp_text}".lower() for k in trump_kws):
+                    continue
+            elif section_key and section_key in _SECTION_TAG_MAP:
+                _, sec_cat, sec_kws = _SECTION_TAG_MAP[section_key]
+                if det_cat.lower() != sec_cat.lower() and not any(k in combined_text for k in sec_kws):
+                    continue
+                if clean_query not in (section_key, "cryptos", "sport", "elections", "political") and clean_query not in combined_text:
+                    continue
+            else:
+                if clean_query not in combined_text:
+                    continue
 
         is_crypto_q = any(k in q_text.lower() for k in ("bitcoin", "btc", "ethereum", "eth", "solana", "sol"))
         sig = evaluate_polymarket_market(m, check_crypto_live=is_crypto_q)

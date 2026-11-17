@@ -163,8 +163,9 @@ def get_poly_menu_keyboard(is_admin_user: bool = False) -> dict:
             {"text": "🔮 Scan Top 5 Predictions (/poly)", "callback_data": "/poly"},
         ],
         [
-            {"text": "🚀 Crypto Predictions (/poly crypto)", "callback_data": "/poly crypto"},
-            {"text": "🏆 Sports & Events (/poly sports)", "callback_data": "/poly sports"},
+            {"text": "🚀 Crypto (/poly crypto)", "callback_data": "/poly crypto"},
+            {"text": "🏆 Sports (/poly sports)", "callback_data": "/poly sports"},
+            {"text": "🇺🇸 Trump (/poly trump)", "callback_data": "/poly trump"},
         ],
         [
             {"text": "📊 Active Bets (/pstatus)", "callback_data": "/pstatus"},
