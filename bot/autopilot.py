@@ -261,7 +261,6 @@ class AutoPilot:
             f"• <b>Markets:</b> <code>Crypto & Memecoins ({len(ALL_WATCHLIST)} pairs)</code>",
             f"• <b>Min Confidence:</b> <code>{self.min_confidence}%</code> (A+ Setups Only)",
             "• <b>Recipients:</b> <code>Admin + Active Crypto/Bundle VIPs</code>",
-            "• <b>Scan Interval:</b> <code>Every ~45 seconds (&lt;1 min)</code>",
             f"• <b>Signal Cooldown:</b> <code>{self.cooldown_seconds // 60} minutes</code>",
             "",
         ]

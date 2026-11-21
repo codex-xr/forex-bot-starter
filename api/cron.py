@@ -1,4 +1,3 @@
-import concurrent.futures
 import json
 from http.server import BaseHTTPRequestHandler
 from bot.autopilot import autopilot
@@ -33,18 +32,10 @@ class handler(BaseHTTPRequestHandler):
         # 3. Run autopilot symbol scans in parallel unless mode=trades is specified
         alerts = []
         if "mode=trades" not in self.path and autopilot:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-                future_to_sym = {
-                    executor.submit(autopilot.scan_single_symbol, symbol): symbol
-                    for symbol in ALL_WATCHLIST
-                }
-                for future in concurrent.futures.as_completed(future_to_sym):
-                    symbol = future_to_sym[future]
-                    try:
-                        if future.result():
-                            alerts.append(symbol)
-                    except Exception as exc:
-                        print(f"[Cron Scan] Error on {symbol}: {exc}")
+            try:
+                alerts = autopilot.run_cycle()
+            except Exception as exc:
+                print(f"[Cron Scan] AutoPilot cycle error: {exc}")
 
         self.send_response(200)
         self.send_header("Content-type", "application/json")
