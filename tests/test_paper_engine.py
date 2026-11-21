@@ -630,7 +630,8 @@ class TestPendingLimitOrders:
 
         with patch("bot.telegram_commands.fetch_live_candles", return_value=mock_df), \
              patch("bot.telegram_commands.send_telegram_message") as mock_send, \
-             patch("bot.telegram_commands.telegram_request"):
+             patch("bot.telegram_commands.telegram_request"), \
+             patch("bot.telegram_commands.is_user_authorized", return_value=(True, "active")):
             handle_callback_query(cb_query)
 
         assert mock_send.called
@@ -638,6 +639,48 @@ class TestPendingLimitOrders:
         assert "❌ Failed" not in call_msg
         assert "AVAX" in call_msg
         assert "Paper Trade Entered" in call_msg
+
+    def test_callback_paper_enter_blocks_unauthorized_user(self):
+        from bot.access_control import _STORE, generate_key, redeem_key
+        from bot.telegram_commands import handle_callback_query, handle_message
+
+        _STORE["keys"].clear()
+        _STORE["users"].clear()
+
+        # Unregistered visitor cannot execute paper_enter:
+        with patch("bot.telegram_commands.send_telegram_message") as mock_send, \
+             patch("bot.telegram_commands.telegram_request"):
+            handle_callback_query({
+                "id": "cb_unauth",
+                "from": {"id": 444555, "username": "unauth_visitor"},
+                "message": {"chat": {"id": 444555}},
+                "data": "paper_enter:BTC_USD:BUY",
+            })
+        assert "Access Restricted" in mock_send.call_args[0][0]
+
+        # Poly-only VIP cannot execute paper_close:
+        p_key, _ = generate_key("30d", access_tier="poly")
+        redeem_key(444556, {"username": "poly_only"}, p_key)
+        with patch("bot.telegram_commands.send_telegram_message") as mock_send, \
+             patch("bot.telegram_commands.telegram_request"):
+            handle_callback_query({
+                "id": "cb_poly",
+                "from": {"id": 444556, "username": "poly_only"},
+                "message": {"chat": {"id": 444556}},
+                "data": "paper_close:POS1",
+            })
+        assert "Crypto & Memecoin Signals Locked" in mock_send.call_args[0][0]
+
+        # Command with @BotUsername suffix is stripped properly
+        c_key, _ = generate_key("30d", access_tier="crypto")
+        redeem_key(444557, {"username": "group_user"}, c_key)
+        with patch("bot.telegram_commands.send_telegram_message") as mock_send:
+            handle_message({
+                "chat": {"id": 444557},
+                "from": {"id": 444557, "username": "group_user"},
+                "text": "/time@MyCryptoBot",
+            })
+        assert "Recommended Daily Scan Times" in mock_send.call_args[0][0]
 
     def test_offline_multi_candle_tp1_hit_caught(self):
         import time

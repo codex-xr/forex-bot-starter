@@ -88,6 +88,8 @@ SYMBOL_KEYWORD_MAP = {
     "SUI_USD": ["sui", "mysten labs"],
     "NEAR_USD": ["near protocol", "near"],
     "LTC_USD": ["litecoin", "ltc"],
+    "ADA_USD": ["cardano", "ada", "hoskinson"],
+    "ELON_USD": ["dogelon", "elon mars"],
 }
 
 

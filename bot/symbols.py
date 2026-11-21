@@ -44,6 +44,39 @@ DEX_POOLS = {
     "ANSEM_USD": ("solana", "FnzKY6x7entQ1eR3D225dQyT7ybfka4PskBMQhb8L3CC"),
 }
 
+# Fallback exchanges / liquid DEX pools when Binance Spot/Futures is geo-restricted or unavailable
+GATE_SYMBOLS = {
+    "BRETT_USD": "BRETT_USDT",
+    "MOG_USD": "MOG_USDT",
+    "WIF_USD": "WIF_USDT",
+    "PEPE_USD": "PEPE_USDT",
+    "SHIB_USD": "SHIB_USDT",
+    "BONK_USD": "BONK_USDT",
+    "FLOKI_USD": "FLOKI_USDT",
+    "TRUMP_USD": "TRUMP_USDT",
+    "BOME_USD": "BOME_USDT",
+    "PENGU_USD": "PENGU_USDT",
+    "PEOPLE_USD": "PEOPLE_USDT",
+    "BTC_USD": "BTC_USDT",
+    "ETH_USD": "ETH_USDT",
+    "SOL_USD": "SOL_USDT",
+    "XRP_USD": "XRP_USDT",
+    "DOGE_USD": "DOGE_USDT",
+    "ADA_USD": "ADA_USDT",
+    "BNB_USD": "BNB_USDT",
+    "AVAX_USD": "AVAX_USDT",
+    "LINK_USD": "LINK_USDT",
+    "SUI_USD": "SUI_USDT",
+    "NEAR_USD": "NEAR_USDT",
+    "LTC_USD": "LTC_USDT",
+}
+
+DEX_POOL_FALLBACKS = {
+    "BRETT_USD": ("base", "0xba3f945812a83471d709bce9c3ca699a19fb46f7"),
+    "MOG_USD": ("eth", "0xc2eab7d33d3cb97692ecb231a5d0e4a649cb539d"),
+    "ELON_USD": ("eth", "0x7b73644935b8e68019ac6356c40661e1bc315860"),
+}
+
 DISPLAY_NAMES = {
     # Major Cryptos (/c1)
     "BTC_USD": "BTCUSD",
@@ -102,6 +135,8 @@ PIP_VALUES = {
     "BOME_USD": 0.00001,
     "PENGU_USD": 0.00001,
     "MOG_USD": 0.000000001,
+    "PEOPLE_USD": 0.0001,
+    "ELON_USD": 0.000000001,
 }
 
 

@@ -438,8 +438,7 @@ def handle_callback_query(callback_query: dict) -> None:
 
     # 1. Handle 1-Click Crypto Paper Trade Entry
     if data.startswith("paper_enter:"):
-        if get_user_access_tier(chat_id) == "poly":
-            _send_tier_locked_message(chat_id, "crypto")
+        if not _verify_tier_access(chat_id, user_info, "crypto"):
             return
         parts = data.split(":")
         if len(parts) >= 3:
@@ -467,8 +466,7 @@ def handle_callback_query(callback_query: dict) -> None:
 
     # 2. Handle Manual Crypto Paper Trade Close from Status Dashboard
     if data.startswith("paper_close:"):
-        if get_user_access_tier(chat_id) == "poly":
-            _send_tier_locked_message(chat_id, "crypto")
+        if not _verify_tier_access(chat_id, user_info, "crypto"):
             return
         pos_id = data.split(":", 1)[1]
         try:
@@ -561,7 +559,7 @@ def handle_message(message: dict) -> None:
         return
 
     parts = raw_text.split()
-    command = parts[0].lower()
+    command = parts[0].split("@", 1)[0].lower()
     subcmd = parts[1] if len(parts) > 1 else ""
 
     print(f"Received command '{raw_text}' from chat {chat_id} (@{user_info.get('username')})")
@@ -842,7 +840,10 @@ def handle_message(message: dict) -> None:
                 for idx, sig in enumerate(picks, start=1):
                     short_q = sig.question[:24] + "..." if len(sig.question) > 24 else sig.question
                     btn_label = f"🎯 Enter #{idx}: {sig.action} @ {sig.entry_price * 100:.0f}¢ (${bet_amt:g})"
-                    buttons.append([{"text": btn_label, "callback_data": f"poly_enter:{idx}"}])
+                    cb_val = f"poly_enter:{sig.market_id}:{sig.side}"
+                    if len(cb_val.encode("utf-8")) > 64:
+                        cb_val = f"poly_enter:{sig.market_id}"
+                    buttons.append([{"text": btn_label, "callback_data": cb_val}])
 
                 buttons.append([
                     {"text": "📊 Active Bets (/pstatus)", "callback_data": "/pstatus"},
@@ -1035,9 +1036,9 @@ def handle_message(message: dict) -> None:
                 if command == "/autopilot_on" or subcmd.lower() == "on":
                     autopilot.resume()
                     send_telegram_message(
-                        "🟢 <b>Auto-Pilot Activated!</b>\n\n"
-                        "Hunting 24/7 for single-pair crypto setups (65% minimum confidence). "
-                        "When a setup triggers, you'll receive a direct single-trade alert.",
+                        f"🟢 <b>Auto-Pilot Live Calls Activated!</b>\n\n"
+                        f"Hunting 24/7 across <b>Crypto &amp; Memecoins</b> ({autopilot.min_confidence}%+ minimum confidence). "
+                        f"Whenever an A+ setup triggers, Admin + active Crypto/Bundle VIPs receive a live call with a 1-tap Enter button.",
                         chat_id=chat_id,
                         reply_markup={"inline_keyboard": [
                             [{"text": "🔴 Pause Auto-Pilot", "callback_data": "/autopilot off"}],

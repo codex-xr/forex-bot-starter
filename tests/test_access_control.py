@@ -319,3 +319,66 @@ class TestCloudPersistence:
         assert _load_from_cloud() is None
         assert _save_to_cloud({"test": 1}) is False
 
+
+class TestSafetyAndRecipients:
+    def test_parse_admin_ids_supports_comma_list(self):
+        from bot.access_control import _parse_admin_ids
+        with patch.dict("os.environ", {"TELEGRAM_CHAT_ID": "6686703329, 123456"}):
+            assert _parse_admin_ids() == [6686703329, 123456]
+            assert is_admin(123456) is True
+
+    def test_parse_schedule_timing_rejects_invalid_clock(self):
+        ts, interval, label, is_rec = parse_schedule_timing("daily 25:99")
+        assert ts is None
+        assert is_rec is False
+
+    def test_get_crypto_signal_recipients_filters_poly_only(self):
+        from bot.access_control import get_crypto_signal_recipients
+        c_key, _ = generate_key("30d", access_tier="crypto")
+        p_key, _ = generate_key("30d", access_tier="poly")
+        b_key, _ = generate_key("30d", access_tier="both")
+        redeem_key(20001, {"username": "c_user"}, c_key)
+        redeem_key(20002, {"username": "p_user"}, p_key)
+        redeem_key(20003, {"username": "b_user"}, b_key)
+
+        recips = get_crypto_signal_recipients()
+        assert ADMIN_CHAT_ID in recips
+        assert 20001 in recips
+        assert 20003 in recips
+        assert 20002 not in recips
+
+    @patch("bot.telegram.telegram_request")
+    def test_send_telegram_message_chunks_over_4000_chars(self, mock_req):
+        from bot.telegram import send_telegram_message
+        long_msg = ("Signal Block A\n\n" * 400).strip()
+        assert len(long_msg) > 4096
+        kb = {"inline_keyboard": [[{"text": "Test", "callback_data": "/menu"}]]}
+
+        send_telegram_message(long_msg, chat_id=12345, reply_markup=kb)
+        assert mock_req.call_count >= 2
+        for idx, c in enumerate(mock_req.call_args_list):
+            payload = c[0][1]
+            assert len(payload["text"]) <= 4000
+            if idx < len(mock_req.call_args_list) - 1:
+                assert "reply_markup" not in payload
+            else:
+                assert payload["reply_markup"] == kb
+
+    @patch("bot.market_data.fetch_dex_candles")
+    @patch("bot.market_data.fetch_gate_candles")
+    @patch("bot.binance_engine.fetch_binance_klines", side_effect=RuntimeError("451 restricted"))
+    def test_market_data_falls_back_to_gate_and_dex(self, mock_bin, mock_gate, mock_dex):
+        import pandas as pd
+        from bot.market_data import fetch_live_candles
+
+        sample_df = pd.DataFrame([{"open": 1.0, "high": 1.1, "low": 0.9, "close": 1.05, "volume": 100.0}] * 15)
+        mock_gate.return_value = sample_df
+        df_brett = fetch_live_candles("BRETT_USD")
+        assert len(df_brett) == 15
+        assert mock_gate.called
+
+        mock_dex.return_value = sample_df
+        df_elon = fetch_live_candles("ELON_USD")
+        assert len(df_elon) == 15
+        assert mock_dex.called
+

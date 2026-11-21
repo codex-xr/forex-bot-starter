@@ -24,6 +24,54 @@ def telegram_request(method: str, payload: dict | None = None, timeout: int | tu
     return response.json()
 
 
+MAX_TELEGRAM_TEXT_LENGTH = 4000
+
+
+def _split_telegram_message(text: str, max_len: int = MAX_TELEGRAM_TEXT_LENGTH) -> list[str]:
+    """Splits oversized Telegram messages on clean paragraph/line boundaries under the 4096-char limit."""
+    if len(text) <= max_len:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > max_len:
+        split_at = remaining.rfind("\n\n", 0, max_len)
+        if split_at < max_len // 3:
+            split_at = remaining.rfind("\n", 0, max_len)
+        if split_at < max_len // 3:
+            split_at = remaining.rfind(" ", 0, max_len)
+        if split_at <= 0:
+            split_at = max_len
+
+        chunk = remaining[:split_at].rstrip()
+        if chunk:
+            chunks.append(chunk)
+        remaining = remaining[split_at:].lstrip("\n")
+
+    if remaining:
+        chunks.append(remaining)
+    return chunks or [text[:max_len]]
+
+
+def _resolve_target_chat_ids(chat_id: str | int | None) -> list[str | int]:
+    raw_target = chat_id if chat_id is not None else os.getenv("TELEGRAM_CHAT_ID")
+    if raw_target is None or raw_target == "":
+        return []
+    if isinstance(raw_target, int):
+        return [raw_target]
+    raw_str = str(raw_target).strip().strip("<>\"'")
+    if not raw_str:
+        return []
+    if "," in raw_str:
+        targets: list[str | int] = []
+        for part in raw_str.split(","):
+            clean = part.strip().strip("<>\"'")
+            if clean:
+                targets.append(clean)
+        return targets
+    return [raw_str]
+
+
 def send_telegram_message(
     message: str,
     chat_id: str | int | None = None,
@@ -32,21 +80,25 @@ def send_telegram_message(
 ) -> None:
     load_dotenv()
 
-    target_chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
-    if not target_chat_id:
+    targets = _resolve_target_chat_ids(chat_id)
+    if not targets:
         print("Telegram chat is not configured. Skipping message.")
         return
 
-    payload = {
-        "chat_id": target_chat_id,
-        "text": message,
-    }
-    if parse_mode:
-        payload["parse_mode"] = parse_mode
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
+    chunks = _split_telegram_message(str(message))
+    for target in targets:
+        for idx, chunk in enumerate(chunks):
+            is_last = idx == len(chunks) - 1
+            payload = {
+                "chat_id": target,
+                "text": chunk,
+            }
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            if reply_markup and is_last:
+                payload["reply_markup"] = reply_markup
 
-    telegram_request("sendMessage", payload)
+            telegram_request("sendMessage", payload)
 
 
 def register_telegram_commands() -> dict:
@@ -59,6 +111,7 @@ def register_telegram_commands() -> dict:
         {"command": "menu", "description": "📱 Main Menu (Crypto & Prediction Menus)"},
         {"command": "poly", "description": "🔮 Scan Top 5 Polymarket Predictions"},
         {"command": "pstatus", "description": "📊 Active Polymarket Bets & Live PnL"},
+        {"command": "psummary", "description": "📈 Polymarket End-of-Day PnL Report"},
         {"command": "pwallet", "description": "💼 Polymarket Wallet Balance & Stats"},
         {"command": "polybet", "description": "💵 Set Polymarket Bet Size (/polybet 10)"},
         {"command": "penter", "description": "🎯 Enter Prediction Bet (/penter 1)"},
@@ -76,6 +129,7 @@ def register_telegram_commands() -> dict:
         {"command": "setsize", "description": "⚙️ Set Crypto Margin (/setsize 10)"},
         {"command": "setleverage", "description": "⚡ Set Crypto Leverage (/setleverage 25x)"},
         {"command": "news", "description": "📰 Breaking Catalysts & News Monitor"},
+        {"command": "time", "description": "⏰ Recommended Daily Scan Times"},
         {"command": "myplan", "description": "ℹ️ View VIP Subscription Status"},
         {"command": "redeem", "description": "🔑 Activate VIP Key (/redeem KEY)"},
         {"command": "help", "description": "❓ Show Full Help & Command Guide"},
@@ -86,12 +140,16 @@ def register_telegram_commands() -> dict:
         {"command": "admin", "description": "👑 Master Admin Control Panel"},
         {"command": "poly", "description": "🔮 Scan Top 5 Polymarket Predictions"},
         {"command": "pstatus", "description": "📊 Active Polymarket Bets & Live PnL"},
+        {"command": "psummary", "description": "📈 Polymarket End-of-Day PnL Report"},
         {"command": "pwallet", "description": "💼 Polymarket Wallet Balance & Stats"},
         {"command": "polybet", "description": "💵 Set Polymarket Bet Size (/polybet 10)"},
         {"command": "c1", "description": "🚀 Major Cryptos Scan"},
         {"command": "c2", "description": "⚡ Hot Altcoins Scan"},
         {"command": "m1", "description": "🐶 Top Memes Scan"},
+        {"command": "m2", "description": "🐸 Trending Memes Scan"},
         {"command": "status", "description": "📊 Live Crypto Trades & Floating PnL"},
+        {"command": "summary", "description": "📅 Crypto End-of-Day PnL Report"},
+        {"command": "time", "description": "⏰ Recommended Daily Scan Times"},
         {"command": "users", "description": "👥 User Dashboard & Access Tracker"},
         {"command": "genkey", "description": "🔑 Generate Key (/genkey 30d crypto|poly|both)"},
         {"command": "grant", "description": "🎁 Direct VIP Grant (/grant id 30d poly)"},

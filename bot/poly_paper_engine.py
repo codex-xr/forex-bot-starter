@@ -367,9 +367,14 @@ def close_poly_trade(
 
     pos = ustate.positions.pop(found_key)
 
-    if exit_price is None or exit_price <= 0:
-        live_p, _, _ = get_live_share_price(pos.market_id, pos.side)
-        exit_price = live_p if (live_p is not None and live_p > 0) else pos.entry_price
+    if exit_price is None or exit_price < 0:
+        live_p, is_res, win_side = get_live_share_price(pos.market_id, pos.side)
+        if is_res and win_side is not None:
+            exit_price = 1.00 if win_side == pos.side else 0.00
+        elif live_p is not None and live_p >= 0:
+            exit_price = live_p
+        else:
+            exit_price = pos.entry_price
 
     exit_price = round(float(exit_price), 4)
     pnl_usd = round(pos.shares * (exit_price - pos.entry_price), 2)
@@ -545,11 +550,21 @@ def get_poly_status_report(user_id: int | str | None = None) -> tuple[str, dict 
     total_floating_pnl = 0.0
 
     for idx, (pos_id, pos) in enumerate(list(ustate.positions.items()), start=1):
-        live_p, _, _ = get_live_share_price(pos.market_id, pos.side)
-        curr_p = live_p if (live_p is not None and live_p > 0) else pos.entry_price
+        live_p, is_resolved, winning_side = get_live_share_price(pos.market_id, pos.side)
+        curr_p = live_p if (live_p is not None and live_p >= 0) else pos.entry_price
 
-        # Second-pass safety check: never show an open trade past TP1 or SL without closing it!
-        if curr_p >= pos.tp1:
+        # Second-pass safety check: never show an open trade past settlement, TP1, or SL without closing it!
+        if is_resolved and winning_side is not None:
+            res_reason = "RESOLVED_WIN" if winning_side == pos.side else "RESOLVED_LOSS"
+            res_exit = 1.00 if winning_side == pos.side else 0.00
+            ok, alert_msg, _ = close_poly_trade(pos_id, exit_price=res_exit, reason=res_reason, user_id=uid)
+            if ok:
+                try:
+                    send_telegram_message(alert_msg, chat_id=uid)
+                except Exception:
+                    pass
+                continue
+        elif curr_p >= pos.tp1:
             ok, alert_msg, _ = close_poly_trade(pos_id, exit_price=pos.tp1, reason="TP1_HIT", user_id=uid)
             if ok:
                 try:
@@ -787,7 +802,7 @@ def get_poly_daily_summary_report(
             short_q = pos.question[:42] + "..." if len(pos.question) > 42 else pos.question
             t_taken = pos.entry_time[len(today_str):].strip() if (pos.entry_time and pos.entry_time.startswith(today_str)) else (pos.entry_time or "N/A")
             live_p, _, _ = get_live_share_price(pos.market_id, pos.side)
-            curr_p = live_p if (live_p is not None and live_p > 0) else pos.entry_price
+            curr_p = live_p if (live_p is not None and live_p >= 0) else pos.entry_price
             fl_usd = pos.shares * (curr_p - pos.entry_price)
             fl_pct = ((curr_p - pos.entry_price) / pos.entry_price) * 100.0 if pos.entry_price > 0 else 0.0
             total_floating_pnl += fl_usd

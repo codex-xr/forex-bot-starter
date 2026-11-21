@@ -1,6 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import html
 import json
+import os
 import re
 import time
 import requests
@@ -30,7 +31,7 @@ _SECTION_TAG_MAP: dict[str, tuple[list[str], str, list[str]]] = {
         ],
     ),
     "trump": (
-        ["trump", "politics"],
+        ["trump"],
         "Trump & Politics",
         [
             "trump", "donald trump", "maga", "white house", "truth social",
@@ -56,6 +57,21 @@ _SECTION_TAG_MAP: dict[str, tuple[list[str], str, list[str]]] = {
     ),
 }
 
+_BROAD_SECTION_ALIASES: set[str] = {
+    "crypto", "cryptos", "coin", "coins", "defi", "web3",
+    "sports", "sport",
+    "trump", "donald trump", "maga",
+    "politics", "political", "election", "elections", "geopolitics",
+    "macro", "finance", "economy", "stocks",
+}
+
+_SOCCER_KEYWORDS: tuple[str, ...] = (
+    "football", "soccer", "premier league", "champions league", "europa league",
+    "la liga", "serie a", "bundesliga", "ligue 1", "world cup", "fifa", "mls",
+    "arsenal", "chelsea", "liverpool", "manchester", "real madrid", "barcelona",
+    "bayern", "psg", "juventus", "inter", "milan", "both teams to score", "epl",
+)
+
 
 def _resolve_section_key(query: str) -> str | None:
     q = query.strip().lower()
@@ -77,6 +93,49 @@ def _resolve_section_key(query: str) -> str | None:
 _RECENT_SIGNALS_BY_USER: dict[str, list["PolymarketSignal"]] = {}
 _SIGNALS_BY_MARKET_ID: dict[str, "PolymarketSignal"] = {}
 _MARKET_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_CRYPTO_SPOT_CACHE: dict[str, tuple[float, tuple[str, float, float, float] | None]] = {}
+
+
+def _save_recent_signals_to_cloud(uid_key: str, signals: list["PolymarketSignal"]) -> None:
+    if os.getenv("PYTEST_CURRENT_TEST") or not signals:
+        return
+    url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+    token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+    if not url or not token:
+        return
+    try:
+        payload = [asdict(s) for s in signals]
+        requests.post(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            json=["SET", f"poly_recent_signals:{uid_key}", json.dumps(payload), "EX", "86400"],
+            timeout=1.5,
+        )
+    except Exception:
+        pass
+
+
+def _load_recent_signals_from_cloud(uid_key: str) -> list["PolymarketSignal"]:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return []
+    url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+    token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+    if not url or not token:
+        return []
+    try:
+        res = requests.get(
+            f"{url}/get/poly_recent_signals:{uid_key}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=1.5,
+        )
+        if res.status_code == 200:
+            raw = res.json().get("result")
+            if isinstance(raw, str):
+                items = json.loads(raw)
+                return [PolymarketSignal(**item) for item in items if isinstance(item, dict)]
+    except Exception:
+        pass
+    return []
 
 
 @dataclass(frozen=True)
@@ -234,17 +293,26 @@ def _get_crypto_spot_bias(question: str) -> tuple[str | None, str]:
         return None, ""
 
     try:
-        from bot.market_data import fetch_live_candles
-        from bot.signal_engine import compute_indicators, htf_bias
-        candles = fetch_live_candles(target_sym, outputsize=90)
-        if candles is None or len(candles) < 30:
-            return None, ""
-        df = compute_indicators(candles)
-        bias = htf_bias(df)
-        last = df.iloc[-1]
-        curr_spot = float(last["close"])
-        rsi_v = float(last["rsi"]) if "rsi" in last and last["rsi"] == last["rsi"] else 50.0
-        rvol_v = float(last["rvol"]) if "rvol" in last and last["rvol"] == last["rvol"] else 1.0
+        now_ts = time.time()
+        cached = _CRYPTO_SPOT_CACHE.get(target_sym)
+        if cached and (now_ts - cached[0]) < 120.0:
+            if cached[1] is None:
+                return None, ""
+            bias, curr_spot, rsi_v, rvol_v = cached[1]
+        else:
+            from bot.market_data import fetch_live_candles
+            from bot.signal_engine import compute_indicators, htf_bias
+            candles = fetch_live_candles(target_sym, outputsize=90)
+            if candles is None or len(candles) < 30:
+                _CRYPTO_SPOT_CACHE[target_sym] = (now_ts, None)
+                return None, ""
+            df = compute_indicators(candles)
+            bias = htf_bias(df)
+            last = df.iloc[-1]
+            curr_spot = float(last["close"])
+            rsi_v = float(last["rsi"]) if "rsi" in last and last["rsi"] == last["rsi"] else 50.0
+            rvol_v = float(last["rvol"]) if "rvol" in last and last["rvol"] == last["rvol"] else 1.0
+            _CRYPTO_SPOT_CACHE[target_sym] = (now_ts, (bias, curr_spot, rsi_v, rvol_v))
         coin_name = target_sym.split("_")[0]
 
         is_bearish_question = any(w in q for w in ("below", "under", "dip", "drop", "crash", "less than"))
@@ -268,7 +336,7 @@ def _get_crypto_spot_bias(question: str) -> tuple[str | None, str]:
             favored_side = "YES" if is_bearish_question else "NO"
             return favored_side, f"Binance {coin_name} (${curr_spot:,.0f}) trend is Bearish (RSI {rsi_v:.0f}, RVol {rvol_v:.1f}x)"
     except Exception:
-        pass
+        _CRYPTO_SPOT_CACHE[target_sym] = (time.time(), None)
     return None, ""
 
 
@@ -382,7 +450,12 @@ def fetch_raw_polymarket_markets(limit: int = 100, query: str = "") -> list[dict
     return []
 
 
-def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> PolymarketSignal | None:
+def evaluate_polymarket_market(
+    raw: dict,
+    check_crypto_live: bool = False,
+    allow_relaxed: bool = False,
+    preferred_side: str | None = None,
+) -> PolymarketSignal | None:
     """
     Scores a single Polymarket market and produces a PolymarketSignal with Confidence %,
     Entry price, Fair value, TP1, TP2, and Stop Loss if it meets quality standards.
@@ -435,6 +508,11 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
     if yes_price <= 0.01 or yes_price >= 0.99 or no_price <= 0.01 or no_price >= 0.99:
         return None
 
+    min_p = 0.22 if allow_relaxed else 0.38
+    max_p = 0.82 if allow_relaxed else 0.74
+    if not ((min_p <= yes_price <= max_p) or (min_p <= no_price <= max_p)):
+        return None
+
     vol_24h = float(raw.get("volume24hr") or raw.get("volumeNum") or raw.get("volume") or 0.0)
     liquidity = float(raw.get("liquidityNum") or raw.get("liquidity") or 0.0)
 
@@ -449,12 +527,14 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
     best_ask = float(raw.get("bestAsk") or yes_price)
     spread = abs(best_ask - best_bid)
 
-    # Reject markets with wide predatory spreads (> 6 cents)
-    if spread > 0.065:
+    # Reject markets with wide predatory spreads (> 6.5 cents strict, > 8 cents relaxed)
+    max_spread = 0.08 if allow_relaxed else 0.065
+    if spread > max_spread:
         return None
 
-    # Fix #1: Filter out "Dead Money" far-future markets (> 75 days out) unless surging >= 5c today
-    if days_to_end is not None and days_to_end > 75.0 and abs(day_change) < 0.05:
+    # Fix #1: Filter out "Dead Money" far-future markets (> 75 days out strict, > 150d relaxed) unless surging >= 5c today
+    max_days = 150.0 if allow_relaxed else 75.0
+    if not preferred_side and days_to_end is not None and days_to_end > max_days and abs(day_change) < 0.05:
         return None
 
     category = _detect_category(question, raw)
@@ -475,49 +555,54 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
         vol_bonus = 2.0
         vol_reason = f"Liquid market (${vol_24h:,.0f} 24h)"
 
-    # Optional Live Binance Cross-Market Check for Crypto Markets
-    crypto_side, crypto_reason = (None, "")
-    if check_crypto_live and category == "Crypto":
-        crypto_side, crypto_reason = _get_crypto_spot_bias(question)
-
-    # 2. Evaluate YES and NO using Calibrated 38c-74c Sweet Spot + Multi-Option & 1h Guards
-    best_candidate: dict | None = None
+    # 2. Fast Pre-Screening & Scoring BEFORE external Binance spot calls
+    pref = preferred_side.strip().upper() if preferred_side else None
+    passing_candidates: list[dict] = []
     for side_cand, p_cand, h_mom, d_mom, w_mom in (
         ("YES", yes_price, hour_change, day_change, week_change),
         ("NO", no_price, -hour_change, -day_change, -week_change),
     ):
-        # Fix #2: Cap entry at 74c (instead of 82c) so every pick has >= +35% to +163% upside at $1.00
-        if p_cand < 0.38 or p_cand > 0.74:
+        if pref and side_cand != pref:
             continue
 
-        # Fix #4: Block last-hour reversals (never buy a 24h pump that is dumping >= 2.5c in the last hour)
-        if h_mom <= -0.025:
+        if p_cand < min_p or p_cand > max_p:
             continue
 
-        # Never buy into a collapsing favorite (require aligned or stable momentum)
-        if d_mom < -0.01 or w_mom < -0.02:
-            continue
+        if not allow_relaxed:
+            # Fix #4: Block last-hour reversals (never buy a 24h pump that is dumping >= 2.5c in the last hour)
+            if h_mom <= -0.025:
+                continue
 
-        # Fix #2b: On multi-choice group rows (e.g. "Lamine Yamal"), require active momentum so we never pick passive BUY NO rows
-        if group_item and side_cand == "NO" and d_mom < 0.025:
-            continue
+            # Never buy into a collapsing favorite (require aligned or stable momentum)
+            if d_mom < -0.01 or w_mom < -0.02:
+                continue
+
+            # Fix #2b: On multi-choice group rows (e.g. "Lamine Yamal"), require active momentum so we never pick passive BUY NO rows
+            if group_item and side_cand == "NO" and d_mom < 0.025:
+                continue
+        else:
+            if h_mom <= -0.04 or d_mom < -0.025 or w_mom < -0.04:
+                continue
 
         cand_reasons: list[str] = [vol_reason]
         score = 52.0 + vol_bonus
 
-        if 0.52 <= p_cand <= 0.74:
+        if 0.52 <= p_cand <= max_p:
             score += 8.0
             cand_reasons.append(f"Consensus leader ({p_cand * 100:.0f}¢) with smart-money support")
             if d_mom == 0.0 and w_mom == 0.0 and vol_24h >= 1500:
                 score += 4.5
         else:
-            # 38c - 52c breakout contender requires strong daily + weekly surge
+            # 38c - 52c breakout contender requires strong daily + weekly surge (or active volume in relaxed mode)
             if d_mom >= 0.025 and w_mom >= 0.02:
                 score += 7.0
                 cand_reasons.append(f"Breakout contender surging +{d_mom * 100:.1f}¢ (24h)")
             elif d_mom >= 0.015 and vol_24h >= 5000:
                 score += 6.5
                 cand_reasons.append(f"Breakout contender gaining +{d_mom * 100:.1f}¢ on strong volume")
+            elif allow_relaxed and vol_24h >= 5000:
+                score += 4.0
+                cand_reasons.append(f"Active contender ({p_cand * 100:.0f}¢) on ${vol_24h:,.0f} volume")
             else:
                 continue
 
@@ -553,20 +638,39 @@ def evaluate_polymarket_market(raw: dict, check_crypto_live: bool = False) -> Po
             score += 3.0
             cand_reasons.append(f"Tight institutional spread ({spread * 100:.1f}¢)")
 
-        if crypto_side == side_cand:
+        passing_candidates.append({
+            "side": side_cand,
+            "entry": round(p_cand, 3),
+            "score": score,
+            "reasons": cand_reasons,
+        })
+
+    if not passing_candidates:
+        return None
+
+    # Optional Live Binance Cross-Market Check ONLY after a candidate passes cheap filters
+    crypto_side, crypto_reason = (None, "")
+    if check_crypto_live and category == "Crypto":
+        crypto_side, crypto_reason = _get_crypto_spot_bias(question)
+
+    best_candidate: dict | None = None
+    for cand in passing_candidates:
+        score = cand["score"]
+        reasons_list = list(cand["reasons"])
+        if crypto_side == cand["side"]:
             score += 7.0
             if crypto_reason:
-                cand_reasons.insert(0, crypto_reason)
-        elif crypto_side and crypto_side != side_cand:
+                reasons_list.insert(0, crypto_reason)
+        elif crypto_side and crypto_side != cand["side"]:
             score -= 8.0
 
         cand_conf = max(65, min(95, int(round(score))))
         if best_candidate is None or cand_conf > best_candidate["confidence"]:
             best_candidate = {
-                "side": side_cand,
-                "entry": round(p_cand, 3),
+                "side": cand["side"],
+                "entry": cand["entry"],
                 "confidence": cand_conf,
-                "reasons": cand_reasons,
+                "reasons": reasons_list,
             }
 
     if not best_candidate:
@@ -663,40 +767,58 @@ def scan_polymarket_signals(
 
     clean_query = query.strip().lower()
     section_key = _resolve_section_key(clean_query)
-    candidates: list[PolymarketSignal] = []
+    filtered_markets: list[dict] = []
 
     for m in raw_markets:
         q_text = str(m.get("question") or "")
         cat_text = str(m.get("category") or "")
         grp_text = str(m.get("groupItemTitle") or "")
+        slug_text = str(m.get("slug") or "")
         ev_title = ""
+        ev_slug = ""
         events = m.get("events")
         if isinstance(events, list) and events and isinstance(events[0], dict):
             ev_title = str(events[0].get("title") or "")
+            ev_slug = str(events[0].get("slug") or "")
 
         det_cat = _detect_category(q_text, m)
-        combined_text = f"{q_text} {cat_text} {det_cat} {ev_title} {grp_text}".lower()
+        combined_text = f"{q_text} {cat_text} {det_cat} {ev_title} {grp_text} {slug_text} {ev_slug}".lower()
 
         if clean_query:
             if section_key == "trump":
-                # Strictly require Trump-related event/question for '/poly trump'
                 trump_kws = _SECTION_TAG_MAP["trump"][2]
-                if not any(k in f"{q_text} {ev_title} {grp_text}".lower() for k in trump_kws):
+                if not any(k in f"{q_text} {ev_title} {grp_text} {slug_text} {ev_slug}".lower() for k in trump_kws):
+                    continue
+            elif clean_query in ("football", "soccer"):
+                if not any(k in combined_text for k in _SOCCER_KEYWORDS):
                     continue
             elif section_key and section_key in _SECTION_TAG_MAP:
                 _, sec_cat, sec_kws = _SECTION_TAG_MAP[section_key]
                 if det_cat.lower() != sec_cat.lower() and not any(k in combined_text for k in sec_kws):
                     continue
-                if clean_query not in (section_key, "cryptos", "sport", "elections", "political") and clean_query not in combined_text:
+                if clean_query not in _BROAD_SECTION_ALIASES and clean_query not in combined_text:
                     continue
             else:
                 if clean_query not in combined_text:
                     continue
 
-        is_crypto_q = any(k in q_text.lower() for k in ("bitcoin", "btc", "ethereum", "eth", "solana", "sol"))
-        sig = evaluate_polymarket_market(m, check_crypto_live=is_crypto_q)
-        if sig and sig.confidence >= min_confidence:
-            candidates.append(sig)
+        filtered_markets.append(m)
+
+    def _score_markets(markets_list: list[dict], allow_relaxed: bool, min_conf: int) -> list[PolymarketSignal]:
+        out: list[PolymarketSignal] = []
+        for m in markets_list:
+            q_text = str(m.get("question") or "")
+            is_crypto_q = any(k in q_text.lower() for k in ("bitcoin", "btc", "ethereum", "eth", "solana", "sol", "xrp", "doge"))
+            sig = evaluate_polymarket_market(m, check_crypto_live=is_crypto_q, allow_relaxed=allow_relaxed)
+            if sig and sig.confidence >= min_conf:
+                out.append(sig)
+        return out
+
+    candidates = _score_markets(filtered_markets, allow_relaxed=False, min_conf=min_confidence)
+    used_relaxed = False
+    if not candidates and clean_query and filtered_markets:
+        candidates = _score_markets(filtered_markets, allow_relaxed=True, min_conf=max(64, min_confidence - 6))
+        used_relaxed = bool(candidates)
 
     # Sort by Confidence % descending, then by 24h Volume descending
     candidates.sort(key=lambda s: (s.confidence, s.volume_24h), reverse=True)
@@ -714,7 +836,9 @@ def scan_polymarket_signals(
             break
 
     if user_id is not None:
-        _RECENT_SIGNALS_BY_USER[str(user_id)] = top_picks
+        uid_str = str(user_id)
+        _RECENT_SIGNALS_BY_USER[uid_str] = top_picks
+        _save_recent_signals_to_cloud(uid_str, top_picks)
     _RECENT_SIGNALS_BY_USER["global"] = top_picks
 
     if not top_picks:
@@ -727,9 +851,10 @@ def scan_polymarket_signals(
         )
 
     title_topic = f" — Filter: {html.escape(query.upper())}" if clean_query else " — TOP 5 HIGH-EDGE PICKS"
+    mode_note = " | <i>Extended Section Odds</i>" if used_relaxed else ""
     lines = [
         f"🔮 <b>POLYMARKET PREDICTION ENGINE{title_topic}</b>",
-        f"<i>Bet Size: <code>${bet_size:,.2f}</code> per pick (Change anytime with <code>/polybet &lt;amount&gt;</code>)</i>",
+        f"<i>Bet Size: <code>${bet_size:,.2f}</code> per pick (Change with <code>/polybet &lt;amt&gt;</code>){mode_note}</i>",
         "",
     ]
 
@@ -744,24 +869,39 @@ def scan_polymarket_signals(
 def get_cached_signal(user_id: int | str | None, index_or_market_id: str) -> PolymarketSignal | None:
     """
     Retrieves a signal from the user's last /poly scan by 1-based index (e.g. '1'..'5')
-    or by Polymarket market_id.
+    or by Polymarket market_id (optionally 'market_id:side').
     """
-    target = str(index_or_market_id).strip().lstrip("#")
-    if target in _SIGNALS_BY_MARKET_ID:
-        return _SIGNALS_BY_MARKET_ID[target]
+    raw_ref = str(index_or_market_id).strip().lstrip("#")
+    pref_side: str | None = None
+    if ":" in raw_ref:
+        target, side_part = raw_ref.split(":", 1)
+        target = target.strip()
+        pref_side = side_part.strip().upper() or None
+    else:
+        target = raw_ref
+
+    cached = _SIGNALS_BY_MARKET_ID.get(target)
+    if cached and (pref_side is None or cached.side == pref_side):
+        return cached
 
     if target.isdigit():
         idx = int(target) - 1
         uid_key = str(user_id) if user_id is not None else "global"
-        user_list = _RECENT_SIGNALS_BY_USER.get(uid_key) or _RECENT_SIGNALS_BY_USER.get("global") or []
-        if 0 <= idx < len(user_list):
+        user_list = _RECENT_SIGNALS_BY_USER.get(uid_key) or _RECENT_SIGNALS_BY_USER.get("global")
+        if not user_list and user_id is not None:
+            user_list = _load_recent_signals_from_cloud(uid_key)
+            if user_list:
+                _RECENT_SIGNALS_BY_USER[uid_key] = user_list
+        if user_list and 0 <= idx < len(user_list):
             return user_list[idx]
 
     # If not in memory cache (e.g. serverless cold start), fetch market directly by ID
     if target.isdigit() and int(target) > 20:
         m = fetch_market_by_id(target)
         if m:
-            sig = evaluate_polymarket_market(m, check_crypto_live=False)
+            sig = evaluate_polymarket_market(m, check_crypto_live=False, preferred_side=pref_side)
+            if not sig:
+                sig = evaluate_polymarket_market(m, check_crypto_live=False, allow_relaxed=True, preferred_side=pref_side)
             if sig:
                 return sig
     return None

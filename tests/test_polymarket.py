@@ -105,6 +105,34 @@ class TestPolymarketSignalEngine:
         assert cached_1 is not None
         assert cached_1.market_id == picks[0].market_id
 
+        # Verify cold-start style market_id:side lookup
+        cached_direct = get_cached_signal(777001, f"{picks[0].market_id}:{picks[0].side}")
+        assert cached_direct is not None
+        assert cached_direct.market_id == picks[0].market_id
+
+    @patch("bot.polymarket_engine.fetch_raw_polymarket_markets")
+    def test_football_alias_matches_soccer_without_literal_word(self, mock_fetch):
+        mock_fetch.return_value = [{
+            "id": "880011",
+            "question": "Will Arsenal win on 2026-11-22?",
+            "category": "Sports",
+            "outcomes": '["Yes", "No"]',
+            "outcomePrices": '["0.61", "0.39"]',
+            "volume24hr": 120000.0,
+            "liquidityNum": 45000.0,
+            "oneDayPriceChange": 0.04,
+            "oneWeekPriceChange": 0.06,
+            "bestBid": 0.605,
+            "bestAsk": 0.615,
+            "active": True,
+            "closed": False,
+            "acceptingOrders": True,
+            "slug": "epl-ars-match",
+        }]
+        msg, picks = scan_polymarket_signals(query="football", limit=5, min_confidence=65, user_id=777002)
+        assert len(picks) == 1
+        assert picks[0].market_id == "880011"
+
 
 class TestSeparatePolymarketPaperWallet:
     def test_default_wallet_starts_at_100_with_10_bet(self):
@@ -169,6 +197,27 @@ class TestSeparatePolymarketPaperWallet:
         assert "STOP LOSS HIT" in sl_alerts[0]
         closed_sl = _load_poly_store().get_user_state(uid).closed_trades[-1]
         assert closed_sl.exit_price == sig.sl
+
+    @patch("bot.poly_paper_engine.send_telegram_message")
+    @patch("bot.poly_paper_engine.get_live_share_price")
+    def test_resolved_loss_preserves_zero_exit_price(self, mock_live_price, mock_send):
+        uid = 9004
+        reset_poly_wallet(100.0, user_id=uid)
+        set_poly_bet_size(10.0, user_id=uid)
+
+        sig = evaluate_polymarket_market(SAMPLE_MARKET_RAW, check_crypto_live=False)
+        assert sig is not None
+        open_poly_trade(sig, user_id=uid)
+
+        # Resolved loss against YES -> exit price MUST stay 0.00 (full -$10 loss, not breakeven)
+        mock_live_price.return_value = (0.00, True, "NO")
+        alerts = check_open_poly_trades(user_id=uid)
+        assert len(alerts) == 1
+        closed_loss = _load_poly_store().get_user_state(uid).closed_trades[-1]
+        assert closed_loss.exit_reason == "RESOLVED_LOSS"
+        assert closed_loss.exit_price == 0.00
+        assert closed_loss.pnl_usd == pytest.approx(-10.0, abs=0.05)
+        assert get_poly_settings(user_id=uid)["virtual_balance"] == pytest.approx(90.0, abs=0.05)
 
 
 

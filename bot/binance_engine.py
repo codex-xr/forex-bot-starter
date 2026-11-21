@@ -10,6 +10,7 @@ Provides real-time institutional metrics directly from Binance Spot & Futures AP
 import os
 from dataclasses import dataclass
 import html
+import time
 import requests
 import pandas as pd
 from bot.symbols import BINANCE_SYMBOLS
@@ -27,6 +28,19 @@ BINANCE_FUTURES_HOST = "https://fapi.binance.com"
 
 _SESSION = requests.Session()
 _SESSION.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"})
+_HOST_BACKOFF_UNTIL: dict[str, float] = {}
+
+
+def _is_host_backed_off(host: str) -> bool:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return False
+    return time.time() < _HOST_BACKOFF_UNTIL.get(host, 0.0)
+
+
+def _backoff_host(host: str, seconds: float = 180.0) -> None:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return
+    _HOST_BACKOFF_UNTIL[host] = time.time() + seconds
 
 
 @dataclass(frozen=True)
@@ -96,12 +110,14 @@ def fetch_binance_klines(
     target_sym = spot_sym or fut_sym or symbol
 
     for host in ["https://data-api.binance.vision", "https://api.binance.com", "https://api1.binance.com", "https://api2.binance.com"]:
+        if _is_host_backed_off(host):
+            continue
         try:
             url = f"{host}/api/v3/klines"
             res = _SESSION.get(
                 url,
                 params={"symbol": target_sym, "interval": interval, "limit": limit},
-                timeout=timeout,
+                timeout=min(timeout, 2.5),
             )
             if res.status_code == 200:
                 raw_data = res.json()
@@ -125,17 +141,32 @@ def fetch_binance_klines(
                     return df.dropna().sort_values("time").reset_index(drop=True)
             elif res.status_code == 400:
                 break
+            elif res.status_code == 451 and "binance.com" in host:
+                for b_host in ("https://api.binance.com", "https://api1.binance.com", "https://api2.binance.com"):
+                    _backoff_host(b_host, 300.0)
+                break
+        except requests.exceptions.ConnectionError:
+            _backoff_host(host, 180.0)
+            if "binance.vision" in host:
+                # If Binance's public CDN isn't reachable/resolvable, don't stall on extra mirrors
+                for b_host in ("https://api.binance.com", "https://api1.binance.com", "https://api2.binance.com", BINANCE_FUTURES_HOST):
+                    _backoff_host(b_host, 180.0)
+                break
+            if "binance.com" in host:
+                for b_host in ("https://api.binance.com", "https://api1.binance.com", "https://api2.binance.com"):
+                    _backoff_host(b_host, 180.0)
+                break
         except Exception:
             continue
 
     # Try Futures endpoint if Spot failed or pair is Futures-only
-    if fut_sym:
+    if fut_sym and not _is_host_backed_off(BINANCE_FUTURES_HOST):
         try:
             url = f"{BINANCE_FUTURES_HOST}/fapi/v1/klines"
             res = _SESSION.get(
                 url,
                 params={"symbol": fut_sym, "interval": interval, "limit": limit},
-                timeout=timeout,
+                timeout=min(timeout, 2.0),
             )
             if res.status_code == 200:
                 raw_data = res.json()
@@ -157,6 +188,10 @@ def fetch_binance_klines(
                         })
                     df = pd.DataFrame(rows)
                     return df.dropna().sort_values("time").reset_index(drop=True)
+            elif res.status_code == 451:
+                _backoff_host(BINANCE_FUTURES_HOST, 300.0)
+        except requests.exceptions.ConnectionError:
+            _backoff_host(BINANCE_FUTURES_HOST, 180.0)
         except Exception:
             pass
 
@@ -175,6 +210,9 @@ def fetch_binance_derivatives(symbol: str, timeout: float = 1.5) -> dict:
     if (os.getenv("PYTEST_CURRENT_TEST") or os.getenv("BACKTEST_MODE")) and not (hasattr(_SESSION.get, "mock_calls") or hasattr(requests.get, "mock_calls")):
         return {}
 
+    if _is_host_backed_off(BINANCE_FUTURES_HOST):
+        return {}
+
     data: dict = {}
 
     # 1. Open Interest
@@ -183,6 +221,12 @@ def fetch_binance_derivatives(symbol: str, timeout: float = 1.5) -> dict:
         res_oi = _SESSION.get(url_oi, params={"symbol": fut_sym}, timeout=timeout)
         if res_oi.status_code == 200:
             data["open_interest"] = float(res_oi.json().get("openInterest", 0))
+        elif res_oi.status_code == 451:
+            _backoff_host(BINANCE_FUTURES_HOST, 300.0)
+            return {}
+    except requests.exceptions.ConnectionError:
+        _backoff_host(BINANCE_FUTURES_HOST, 180.0)
+        return {}
     except Exception:
         pass
 
@@ -193,6 +237,12 @@ def fetch_binance_derivatives(symbol: str, timeout: float = 1.5) -> dict:
         if res_fr.status_code == 200 and res_fr.json():
             fr_val = float(res_fr.json()[0].get("fundingRate", 0))
             data["funding_rate_pct"] = fr_val * 100
+        elif res_fr.status_code == 451:
+            _backoff_host(BINANCE_FUTURES_HOST, 300.0)
+            return data
+    except requests.exceptions.ConnectionError:
+        _backoff_host(BINANCE_FUTURES_HOST, 180.0)
+        return data
     except Exception:
         pass
 
@@ -204,6 +254,10 @@ def fetch_binance_derivatives(symbol: str, timeout: float = 1.5) -> dict:
             item = res_ls.json()[0]
             data["top_trader_long_pct"] = float(item.get("longAccount", 0.5)) * 100
             data["top_trader_ls_ratio"] = float(item.get("longShortRatio", 1.0))
+        elif res_ls.status_code == 451:
+            _backoff_host(BINANCE_FUTURES_HOST, 300.0)
+    except requests.exceptions.ConnectionError:
+        _backoff_host(BINANCE_FUTURES_HOST, 180.0)
     except Exception:
         pass
 

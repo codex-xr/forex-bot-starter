@@ -107,11 +107,17 @@ class handler(BaseHTTPRequestHandler):
         if path.endswith("/cron"):
             # 1. Check open paper trades FIRST
             paper_trade_alerts = []
+            poly_trade_alerts = []
             try:
                 from bot.paper_engine import check_open_trades
                 paper_trade_alerts = check_open_trades()
             except Exception as exc:
                 print(f"[Cron PaperTrade] Error: {exc}")
+            try:
+                from bot.poly_paper_engine import check_open_poly_trades
+                poly_trade_alerts = check_open_poly_trades()
+            except Exception as exc:
+                print(f"[Cron PolyTrade] Error: {exc}")
 
             # 2. Process any due scheduled broadcasts
             executed_broadcasts = []
@@ -146,6 +152,7 @@ class handler(BaseHTTPRequestHandler):
                 "symbols_scanned": 0 if "mode=trades" in self.path else len(ALL_WATCHLIST),
                 "alerts_triggered": alerts,
                 "paper_trade_alerts": len(paper_trade_alerts),
+                "poly_trade_alerts": len(poly_trade_alerts),
                 "broadcasts_executed": executed_broadcasts,
             }, indent=2).encode("utf-8"))
             return

@@ -11,7 +11,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-ADMIN_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", "6686703329"))
+def _parse_admin_ids() -> list[int]:
+    raw_env = os.getenv("TELEGRAM_CHAT_ID", "6686703329").strip().strip("<>\"'")
+    ids: list[int] = []
+    for part in raw_env.split(","):
+        clean = part.strip().strip("<>\"'").lstrip("@")
+        if clean.lstrip("-").isdigit():
+            ids.append(int(clean))
+    return ids or [6686703329]
+
+
+ADMIN_CHAT_ID = _parse_admin_ids()[0]
 
 # In-memory cache
 _STORE: dict = {
@@ -158,11 +168,7 @@ def is_admin(chat_id: int | str | None) -> bool:
         clean_id = _clean_target(str(chat_id))
         if not clean_id or not clean_id.lstrip("-").isdigit():
             return False
-        admin_env = os.getenv("TELEGRAM_CHAT_ID", "6686703329").strip().strip("<>\"'")
-        admin_ids = [int(_clean_target(x)) for x in admin_env.split(",") if _clean_target(x).isdigit()]
-        if not admin_ids:
-            admin_ids = [6686703329]
-        return int(clean_id) in admin_ids
+        return int(clean_id) in _parse_admin_ids()
     except (ValueError, TypeError):
         return False
 
@@ -761,8 +767,7 @@ def get_broadcast_recipients(only_vip: bool = False) -> list[int]:
     If only_vip is False, broadcasts to ALL tracked users (VIPs, Visitors, Expired) except Revoked.
     """
     _load_store()
-    ids = set()
-    ids.add(ADMIN_CHAT_ID)
+    ids = set(_parse_admin_ids())
 
     for cid_str, u in _STORE["users"].items():
         st = u.get("status", "pending")
@@ -784,6 +789,32 @@ def get_broadcast_recipients(only_vip: bool = False) -> list[int]:
                 pass
 
     return list(ids)
+
+
+def get_crypto_signal_recipients() -> list[int]:
+    """
+    Returns Admin chat IDs + active VIP subscribers whose tier includes 'crypto' ('crypto' or 'both').
+    Excludes 'poly'-only, expired, pending, and revoked users.
+    """
+    _load_store()
+    ids = set(_parse_admin_ids())
+    now_ts = time.time()
+
+    for cid_str, u in _STORE["users"].items():
+        if u.get("status") != "active":
+            continue
+        exp_ts = u.get("expires_ts")
+        if exp_ts is not None and now_ts > exp_ts:
+            continue
+        tier = normalize_access_tier(u.get("access_tier", "crypto"))
+        if tier not in ("crypto", "both"):
+            continue
+        try:
+            ids.add(int(_clean_target(cid_str)))
+        except ValueError:
+            pass
+
+    return sorted(ids)
 
 
 def get_all_active_chat_ids() -> list[int]:
@@ -810,6 +841,8 @@ def parse_schedule_timing(time_expr: str) -> tuple[float | None, int | None, str
     if daily_match and ("every" not in s or "daily" in s):
         hour = int(daily_match.group(1))
         minute = int(daily_match.group(2))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return None, None, "", False
         target_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if target_today <= now:
             target_time = target_today + timedelta(days=1)

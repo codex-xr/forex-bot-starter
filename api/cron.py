@@ -54,6 +54,7 @@ class handler(BaseHTTPRequestHandler):
             "symbols_scanned": 0 if "mode=trades" in self.path else len(ALL_WATCHLIST),
             "alerts_triggered": alerts,
             "paper_trade_alerts": len(paper_trade_alerts),
+            "poly_trade_alerts": len(poly_trade_alerts),
             "broadcasts_executed": executed_broadcasts,
         }
         self.wfile.write(json.dumps(res, indent=2).encode("utf-8"))
