@@ -344,6 +344,7 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
     prev_bull = float(prev["close"]) >= float(prev["open"])
     prev_bear = float(prev["close"]) <= float(prev["open"])
 
+    ema_spread = abs(float(last["ema20"]) - float(last["ema50"]))
     bull_trend = macro_bull and last["ema20"] > last["ema50"] and close > last["ema20"] * 0.998
     bear_trend = macro_bear and last["ema20"] < last["ema50"] and close < last["ema20"] * 1.002
 
@@ -358,24 +359,26 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
         )
         is_ema_bounce = (
             not is_overextended
+            and ema_spread >= 0.35 * atr_val
             and range_pos <= 0.70
             and (has_real_body or prev_bull)
-            and prev["low"] <= last["ema20"] * 1.003
+            and prev["low"] <= last["ema20"] * 1.0018
             and close >= last["ema20"]
             and last_adx >= 20
-            and (check_rejection(last, "buy") or (close > open_p and body >= 0.30 * total_range))
+            and last_rvol >= 1.10
+            and (check_rejection(last, "buy") or (close > open_p and body >= 0.42 * total_range))
         )
 
         if is_breakout:
             rvol_str = f", RVol {last_rvol:.1f}x" if last_rvol > 1.0 else ""
             return StrategySignal(
-                "Crypto Momentum Surge", "BUY", 92,
+                "Crypto Momentum Surge", "BUY", 86,
                 f"High-volume breakout ({close:.4f} > {prior_high:.4f}), RSI {last_rsi:.0f}, ADX {last_adx:.0f}{rvol_str}",
             )
         if is_ema_bounce:
             return StrategySignal(
-                "Crypto Momentum Surge", "BUY", 85,
-                f"EMA 20 dynamic support bounce, RSI {last_rsi:.0f}, strong trend continuation",
+                "Crypto Momentum Surge", "BUY", 72,
+                f"EMA 20 dynamic support bounce, RSI {last_rsi:.0f}, RVol {last_rvol:.1f}x trend continuation",
             )
 
     if bear_trend and 32 <= last_rsi <= 52 and last["macd_hist"] < 0:
@@ -389,24 +392,26 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
         )
         is_ema_reject = (
             not is_overextended
+            and ema_spread >= 0.35 * atr_val
             and range_pos >= 0.30
             and (has_real_body or prev_bear)
-            and prev["high"] >= last["ema20"] * 0.997
+            and prev["high"] >= last["ema20"] * 0.9982
             and close <= last["ema20"]
             and last_adx >= 20
-            and (check_rejection(last, "sell") or (close < open_p and body >= 0.30 * total_range))
+            and last_rvol >= 1.10
+            and (check_rejection(last, "sell") or (close < open_p and body >= 0.42 * total_range))
         )
 
         if is_breakdown:
             rvol_str = f", RVol {last_rvol:.1f}x" if last_rvol > 1.0 else ""
             return StrategySignal(
-                "Crypto Momentum Surge", "SELL", 92,
+                "Crypto Momentum Surge", "SELL", 86,
                 f"High-volume breakdown ({close:.4f} < {prior_low:.4f}), RSI {last_rsi:.0f}, ADX {last_adx:.0f}{rvol_str}",
             )
         if is_ema_reject:
             return StrategySignal(
-                "Crypto Momentum Surge", "SELL", 85,
-                f"EMA 20 dynamic resistance rejection, RSI {last_rsi:.0f}, strong trend continuation",
+                "Crypto Momentum Surge", "SELL", 72,
+                f"EMA 20 dynamic resistance rejection, RSI {last_rsi:.0f}, RVol {last_rvol:.1f}x trend continuation",
             )
 
     return StrategySignal("Crypto Momentum Surge", "HOLD", 0, "")
@@ -432,14 +437,14 @@ def _news_catalyst_momentum(data: pd.DataFrame, symbol: str, bias: str = "neutra
     open_p = float(last["open"])
     macd_h = float(last["macd_hist"]) if "macd_hist" in last and pd.notna(last["macd_hist"]) else 0.0
     if sentiment_label == "Bullish" and bias != "bearish" and close >= ema20 and close > open_p and macd_h >= 0 and 48 <= rsi_v <= 68 and adx_v >= 18:
-        conf = min(95, 86 + abs(score) // 10)
+        conf = min(92, 82 + abs(score) // 12)
         return StrategySignal(
             "News Catalyst Momentum", "BUY", conf,
             f"Bullish news catalyst: '{headline[:60]}...' confirmed by EMA20 breakout (RSI {rsi_v:.0f}, ADX {adx_v:.0f})",
         )
 
     if sentiment_label == "Bearish" and bias != "bullish" and close <= ema20 and close < open_p and macd_h <= 0 and 32 <= rsi_v <= 52 and adx_v >= 18:
-        conf = min(95, 86 + abs(score) // 10)
+        conf = min(92, 82 + abs(score) // 12)
         return StrategySignal(
             "News Catalyst Momentum", "SELL", conf,
             f"Bearish news catalyst: '{headline[:60]}...' confirmed by EMA20 breakdown (RSI {rsi_v:.0f}, ADX {adx_v:.0f})",
@@ -459,10 +464,10 @@ def _mean_reversion(data: pd.DataFrame, symbol: str = "", bias: str = "neutral")
     allow_buy = not (last_adx >= 22 and bias == "bearish")
     allow_sell = not (last_adx >= 22 and bias == "bullish")
     if allow_buy and last["low"] <= last["lower_band"] and last["rsi"] <= 38 and last["close"] >= last["open"] and check_rejection(last, "buy"):
-        return StrategySignal("Mean Reversion", "BUY", 78,
+        return StrategySignal("Mean Reversion", "BUY", 80,
                               f"Lower BB touch ({last['lower_band']:.2f}), RSI {last['rsi']:.0f}, bullish rejection")
     if allow_sell and last["high"] >= last["upper_band"] and last["rsi"] >= 62 and last["close"] <= last["open"] and check_rejection(last, "sell"):
-        return StrategySignal("Mean Reversion", "SELL", 78,
+        return StrategySignal("Mean Reversion", "SELL", 80,
                               f"Upper BB touch ({last['upper_band']:.2f}), RSI {last['rsi']:.0f}, bearish rejection")
     return StrategySignal("Mean Reversion", "HOLD", 0, "")
 
@@ -499,12 +504,12 @@ def _smc_sweep(data: pd.DataFrame, bias: str = "neutral", symbol: str = "") -> S
 
     if allow_buy and has_vol_support and last["low"] < support and close > support and check_rejection(last, "buy") and macd_turning_up:
         return StrategySignal(
-            "SMC Sweep", "BUY", 88,
+            "SMC Sweep", "BUY", 84,
             f"Price swept below support ({support:.2f}) and closed back above with rejection & volume confirmation",
         )
     if allow_sell and has_vol_support and last["high"] > resistance and close < resistance and check_rejection(last, "sell") and macd_turning_down:
         return StrategySignal(
-            "SMC Sweep", "SELL", 88,
+            "SMC Sweep", "SELL", 84,
             f"Price swept above resistance ({resistance:.2f}) and closed back below with rejection & volume confirmation",
         )
     return StrategySignal("SMC Sweep", "HOLD", 0, "")
@@ -561,7 +566,7 @@ def _vwap_orderflow_surge(data: pd.DataFrame, symbol: str = "", bias: str = "neu
         return StrategySignal(
             "VWAP Order-Flow Surge",
             "BUY",
-            89,
+            85,
             f"Institutional VWAP reclaim ({vwap:.4f}) backed by {tb_ratio * 100:.0f}% Taker Buy flow, RVol {rvol_v:.1f}x",
         )
 
@@ -582,7 +587,7 @@ def _vwap_orderflow_surge(data: pd.DataFrame, symbol: str = "", bias: str = "neu
         return StrategySignal(
             "VWAP Order-Flow Surge",
             "SELL",
-            89,
+            85,
             f"Institutional VWAP breakdown ({vwap:.4f}) backed by {sell_pct:.0f}% Taker Sell flow, RVol {rvol_v:.1f}x",
         )
 
@@ -605,12 +610,13 @@ def _volatility_squeeze_breakout(data: pd.DataFrame, symbol: str = "", bias: str
     total_range = float(last["high"] - last["low"])
     atr_val = float(last["atr"]) if "atr" in last and pd.notna(last["atr"]) and last["atr"] > 0 else max(total_range, 1e-8)
 
-    if total_range == 0 or total_range > 2.6 * atr_val or body < 0.35 * total_range:
+    adx_v = float(last["adx"]) if "adx" in last and pd.notna(last["adx"]) else 0.0
+    if total_range == 0 or total_range > 2.6 * atr_val or body < 0.45 * total_range or adx_v < 20:
         return StrategySignal("Volatility Squeeze Breakout", "HOLD", 0, "")
 
     bb_series = data["bb_width"].iloc[-50:-1]
     recent_min_bb = float(data["bb_width"].iloc[-7:-1].min())
-    squeeze_threshold = float(bb_series.quantile(0.30))
+    squeeze_threshold = float(bb_series.quantile(0.20))
     if recent_min_bb > squeeze_threshold:
         return StrategySignal("Volatility Squeeze Breakout", "HOLD", 0, "")
 
@@ -619,38 +625,44 @@ def _volatility_squeeze_breakout(data: pd.DataFrame, symbol: str = "", bias: str
     box_low = float(box_ref["low"].min())
     rsi_v = float(last["rsi"]) if pd.notna(last["rsi"]) else 50.0
     rvol_v = float(last["rvol"]) if "rvol" in last and pd.notna(last["rvol"]) else 1.0
+    has_ema200 = "ema200" in last and pd.notna(last["ema200"])
+    sqz_bull = float(last["ema20"]) > float(last["ema50"]) and (close >= float(last["ema200"]) if has_ema200 else True)
+    sqz_bear = float(last["ema20"]) < float(last["ema50"]) and (close <= float(last["ema200"]) if has_ema200 else True)
+    sqz_conf = 72 if rvol_v >= 1.70 else 70
 
     if (
-        bias != "bearish"
+        sqz_bull
+        and bias != "bearish"
         and close > box_high
         and close > float(last["ema20"])
         and close > open_p
         and 50 <= rsi_v <= 66
         and last["macd_hist"] > prev["macd_hist"]
         and last["macd_hist"] > 0
-        and rvol_v >= 1.20
+        and rvol_v >= 1.45
     ):
         return StrategySignal(
             "Volatility Squeeze Breakout",
             "BUY",
-            90,
+            sqz_conf,
             f"Volatility squeeze expansion breakout above {box_high:.4f} (RVol {rvol_v:.1f}x, RSI {rsi_v:.0f})",
         )
 
     if (
-        bias != "bullish"
+        sqz_bear
+        and bias != "bullish"
         and close < box_low
         and close < float(last["ema20"])
         and close < open_p
         and 34 <= rsi_v <= 50
         and last["macd_hist"] < prev["macd_hist"]
         and last["macd_hist"] < 0
-        and rvol_v >= 1.20
+        and rvol_v >= 1.45
     ):
         return StrategySignal(
             "Volatility Squeeze Breakout",
             "SELL",
-            90,
+            sqz_conf,
             f"Volatility squeeze expansion breakdown below {box_low:.4f} (RVol {rvol_v:.1f}x, RSI {rsi_v:.0f})",
         )
 
@@ -803,17 +815,17 @@ def _fallback_scoring(data: pd.DataFrame) -> tuple[str, int, str, int, int]:
     bb_w = float(last["bb_width"]) if "bb_width" in last and pd.notna(last["bb_width"]) else 0.02
 
     # 1. Chop / Squeeze Filter: block fallback signals in dead low-volatility chop
-    if adx_v < 16 and bb_w < 0.008:
-        return "WAIT", max(long_score, short_score), "Low-volatility chop squeeze (ADX < 16)", long_score, short_score
+    if adx_v < 17 or (adx_v < 19 and bb_w < 0.012):
+        return "WAIT", min(max(long_score, short_score), 64), "Low-volatility chop squeeze (ADX < 19)", long_score, short_score
 
     # 2. Directional Candle, Range Structure & Closed-Candle Confirmation:
     # Block buying into the top 22% of a 20-bar range ceiling or selling into the bottom 22% support floor,
-    # and require closed-candle alignment when the current bar just opened (< 0.20 * ATR body).
+    # and require genuine candle body confirmation when no primary strategy fired.
     prev = data.iloc[-2]
     atr_v = float(last["atr"]) if "atr" in last and pd.notna(last["atr"]) and last["atr"] > 0 else max(abs(close - open_p), 1e-8)
-    is_tiny_live_bar = abs(close - open_p) < 0.20 * atr_v
-    prev_bull_ok = (not is_tiny_live_bar) or (float(prev["close"]) >= float(prev["open"]))
-    prev_bear_ok = (not is_tiny_live_bar) or (float(prev["close"]) <= float(prev["open"]))
+    has_solid_body = abs(close - open_p) >= 0.22 * atr_v
+    prev_bull_ok = float(prev["close"]) >= float(prev["open"])
+    prev_bear_ok = float(prev["close"]) <= float(prev["open"])
 
     ref20 = data.iloc[-21:-1] if len(data) >= 22 else data.iloc[:-1]
     hi20 = float(ref20["high"].max()) if len(ref20) > 0 else close
@@ -824,15 +836,15 @@ def _fallback_scoring(data: pd.DataFrame) -> tuple[str, int, str, int, int]:
     bull_range_ok = (r_pos <= 0.78) or (close > hi20)
     bear_range_ok = (r_pos >= 0.22) or (close < lo20)
 
-    bull_candle_ok = close >= open_p and close >= ema20 * 0.999 and rsi_v <= 68 and prev_bull_ok and bull_range_ok
-    bear_candle_ok = close <= open_p and close <= ema20 * 1.001 and rsi_v >= 32 and prev_bear_ok and bear_range_ok
+    bull_candle_ok = close > open_p and has_solid_body and close >= ema20 * 0.999 and rsi_v <= 66 and prev_bull_ok and bull_range_ok
+    bear_candle_ok = close < open_p and has_solid_body and close <= ema20 * 1.001 and rsi_v >= 34 and prev_bear_ok and bear_range_ok
 
-    if long_score >= 60 and long_score >= short_score + 8 and bull_candle_ok:
-        return "BUY", min(long_score, 95), "; ".join(all_lr), long_score, short_score
-    if short_score >= 60 and short_score >= long_score + 8 and bear_candle_ok:
-        return "SELL", min(short_score, 95), "; ".join(all_sr), long_score, short_score
+    if long_score >= 65 and long_score >= short_score + 12 and bull_candle_ok:
+        return "BUY", min(long_score, 68), "; ".join(all_lr), long_score, short_score
+    if short_score >= 65 and short_score >= long_score + 12 and bear_candle_ok:
+        return "SELL", min(short_score, 68), "; ".join(all_sr), long_score, short_score
 
-    return "WAIT", max(long_score, short_score), "Setup not strong enough", long_score, short_score
+    return "WAIT", min(max(long_score, short_score), 64), "Setup not strong enough", long_score, short_score
 
 
 def _make_report(symbol: str, action: str, confidence: int, trend: str,
@@ -999,7 +1011,7 @@ def _quality_gate(
             fb_action = "WAIT"
             fb_reason = f"Blocked counter-trend fallback against {trend} macro bias"
         elif (fb_action == "BUY" and bias == "bullish") or (fb_action == "SELL" and bias == "bearish"):
-            fb_conf = min(95, fb_conf + 3)
+            fb_conf = min(69, fb_conf + 2)
 
     if fb_action != "WAIT" and fb_conf >= gate_threshold:
         return _make_report(symbol, fb_action, fb_conf, trend, close, atr_val, fb_reason, data=data)
@@ -1138,6 +1150,24 @@ def _analyze_crypto_setup(
                 reason=f"⛔ {btc_reason}",
                 smart_money=sm_metrics.summary_text if sm_metrics else None,
             )
+
+        try:
+            from bot.news_engine import should_pause_for_news_whipsaw
+            news_paused, news_pause_reason = should_pause_for_news_whipsaw(symbol)
+            if news_paused:
+                return SignalReport(
+                    symbol=report.symbol,
+                    action="WAIT",
+                    confidence=42,
+                    trend=report.trend,
+                    entry=None,
+                    stop_loss=None,
+                    take_profit=None,
+                    reason=f"⛔ {news_pause_reason}",
+                    smart_money=sm_metrics.summary_text if sm_metrics else None,
+                )
+        except Exception:
+            pass
 
     # 3. Active Smart Money VETO: Protect capital if whales or funding directly contradict the signal
     if sm_metrics and report.action in ("BUY", "SELL"):

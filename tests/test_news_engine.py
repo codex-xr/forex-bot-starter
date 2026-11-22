@@ -80,3 +80,36 @@ class TestNewsEngine(unittest.TestCase):
         self.assertIn("TP 3 (1:3.5)", msg)
         self.assertIn("1.12000", msg)
         self.assertIn("News Catalyst", msg)
+
+    def test_negated_bullish_headline_flips_bearish(self):
+        title = "SEC rejects Bitcoin ETF approval and delays crypto trading ruling"
+        score, label, impact, targets = analyze_headline_sentiment(title)
+        self.assertEqual(label, "Bearish")
+        self.assertLess(score, -25)
+
+    def test_whipsaw_guard_and_stale_catalyst_filter(self):
+        import time
+        from bot.news_engine import get_asset_catalyst, should_pause_for_news_whipsaw
+
+        now_ts = time.time()
+        fresh_hack = NewsArticle(
+            id="h1", title="Major exchange hack triggers flash crash warning", url="u", source="CoinDesk",
+            body="Critical exploit underway", published_at="12:00 UTC",
+            sentiment_score=-80, sentiment_label="Bearish", impact_level="CRITICAL",
+            affected_symbols=["BTC_USD"], published_ts=now_ts - 300,
+        )
+        stale_art = NewsArticle(
+            id="s1", title="Bitcoin ETF approved in major milestone", url="u2", source="Decrypt",
+            body="Details", published_at="01:00 UTC",
+            sentiment_score=70, sentiment_label="Bullish", impact_level="CRITICAL",
+            affected_symbols=["BTC_USD"], published_ts=now_ts - 86400,
+        )
+
+        with patch("bot.news_engine.fetch_latest_news", return_value=[stale_art]):
+            self.assertIsNone(get_asset_catalyst("BTC_USD"))
+
+        with patch("bot.news_engine.fetch_latest_news", return_value=[fresh_hack]), \
+             patch.dict("os.environ", {"PYTEST_CURRENT_TEST": "", "BACKTEST_MODE": ""}, clear=False):
+            paused, reason = should_pause_for_news_whipsaw("BTC_USD")
+            self.assertTrue(paused)
+            self.assertIn("whipsaw guard", reason)

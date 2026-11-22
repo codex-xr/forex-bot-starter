@@ -164,7 +164,7 @@ class AutoPilot:
         )
         reply_markup = {
             "inline_keyboard": [
-                [{"text": f"🚀 Enter {disp} ({report.action})", "callback_data": f"paper_enter:{symbol}:{report.action}"}],
+                [{"text": f"🚀 Enter {disp} ({report.action})", "callback_data": f"paper_enter:{symbol}:{report.action}:{report.confidence}"}],
                 [{"text": "📊 Live Positions (/status)", "callback_data": "/status"}],
             ]
         }

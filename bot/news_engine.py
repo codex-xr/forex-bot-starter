@@ -1,8 +1,10 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import html
 import re
 import sys
+import time
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -52,6 +54,24 @@ BEARISH_KEYWORDS = {
     "subpoena": 20,
     "investigation": 20,
     "rate hike": 25,
+    "no rate cut": 25,
+    "higher inflation": 25,
+    "hotter cpi": 25,
+    "hawkish": 20,
+    "etf rejected": 35,
+    "etf delayed": 25,
+    "depeg": 35,
+    "depegged": 35,
+    "bank run": 35,
+    "rug pull": 35,
+    "insolvent": 35,
+    "insolvency": 35,
+    "outage": 20,
+    "rejected": 25,
+    "denies": 20,
+    "denied": 20,
+    "delays": 20,
+    "delayed": 20,
     "dump": 15,
     "crash": 20,
     "liquidation": 15,
@@ -61,6 +81,19 @@ BEARISH_KEYWORDS = {
     "fud": 10,
     "recession": 20,
 }
+
+_NEGATION_WORDS = (
+    "not", "no", "never", "without", "reject", "rejects", "rejected",
+    "deny", "denies", "denied", "delay", "delays", "delayed",
+    "cancel", "cancels", "canceled", "cancelled", "postpone", "postpones",
+    "halt", "halts", "halted", "fail", "fails", "failed", "block", "blocks", "blocked",
+)
+
+_WHIPSAW_PAUSE_KEYWORDS = (
+    "hack", "hacked", "exploit", "stolen", "depeg", "depegged",
+    "bankruptcy", "bank run", "insolvent", "insolvency", "flash crash",
+    "fomc", "fed rate decision", "cpi report", "emergency rate", "halt",
+)
 
 SYMBOL_KEYWORD_MAP = {
     "BTC_USD": ["bitcoin", "btc", "satoshi", "strategic reserve", "bitcoin reserve", "crypto reserve", "mining"],
@@ -105,21 +138,29 @@ class NewsArticle:
     sentiment_label: str          # Bullish, Bearish, Neutral
     impact_level: str             # LOW, MEDIUM, HIGH, CRITICAL
     affected_symbols: list[str]
+    published_ts: float | None = None
 
 
 def analyze_headline_sentiment(title: str, body: str = "") -> tuple[int, str, str, list[str]]:
     """
     Computes sentiment score (-100 to +100), sentiment label, impact level,
-    and maps target affected symbols.
+    and maps target affected symbols (with negation awareness so flipped headlines
+    like 'SEC rejects ETF approval' do not score Bullish).
     """
     text = (title + " " + body).lower()
 
     bullish_score = 0
     bearish_score = 0
+    neg_group = "|".join(_NEGATION_WORDS)
 
     for kw, weight in BULLISH_KEYWORDS.items():
-        if re.search(r"\b" + re.escape(kw) + r"\b", text):
-            bullish_score += weight
+        kw_pattern = r"\b" + re.escape(kw) + r"\b"
+        if re.search(kw_pattern, text):
+            neg_pattern = r"\b(?:" + neg_group + r")\s+(?:\w+\s+){0,3}" + re.escape(kw) + r"\b"
+            if re.search(neg_pattern, text):
+                bearish_score += weight
+            else:
+                bullish_score += weight
 
     for kw, weight in BEARISH_KEYWORDS.items():
         if re.search(r"\b" + re.escape(kw) + r"\b", text):
@@ -152,7 +193,7 @@ def analyze_headline_sentiment(title: str, body: str = "") -> tuple[int, str, st
 
     # General market defaults if crypto/macro news
     if not affected:
-        if "crypto" in text or "sec" in text or "market" in text:
+        if any(w in text for w in ("crypto", "sec", "market", "fomc", "cpi", "fed ", "powell", "rate cut", "rate hike")):
             affected = ["BTC_USD", "ETH_USD"]
 
     return net_score, sentiment_label, impact_level, affected
@@ -188,6 +229,7 @@ def fetch_latest_news(limit: int = 15, force_refresh: bool = False) -> list[News
         rss_feeds = [
             ("CoinTelegraph", "https://cointelegraph.com/rss"),
             ("Decrypt", "https://decrypt.co/feed"),
+            ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
         ]
 
         articles: list[NewsArticle] = []
@@ -215,10 +257,18 @@ def fetch_latest_news(limit: int = 15, force_refresh: bool = False) -> list[News
 
                     pub_elem = item.find("pubDate")
                     pub_date = pub_elem.text.strip() if pub_elem is not None and pub_elem.text else "Recent"
+                    pub_ts: float | None = None
                     try:
-                        time_part = pub_date.split()[4][:5] + " UTC"
+                        parsed_dt = parsedate_to_datetime(pub_date)
+                        if parsed_dt.tzinfo is None:
+                            parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+                        pub_ts = parsed_dt.timestamp()
+                        time_part = parsed_dt.astimezone(timezone.utc).strftime("%H:%M UTC")
                     except Exception:
-                        time_part = "Recent"
+                        try:
+                            time_part = pub_date.split()[4][:5] + " UTC"
+                        except Exception:
+                            time_part = "Recent"
 
                     if not title:
                         continue
@@ -237,6 +287,7 @@ def fetch_latest_news(limit: int = 15, force_refresh: bool = False) -> list[News
                             sentiment_label=label,
                             impact_level=impact,
                             affected_symbols=affected,
+                            published_ts=pub_ts,
                         )
                     )
             except Exception:
@@ -252,16 +303,49 @@ def fetch_latest_news(limit: int = 15, force_refresh: bool = False) -> list[News
     return articles[:limit]
 
 
-def get_asset_catalyst(symbol: str) -> tuple[str, int, str] | None:
+def get_asset_catalyst(symbol: str, max_age_seconds: int = 43200) -> tuple[str, int, str] | None:
     """
-    Returns the most impactful catalyst for a specific symbol:
+    Returns the most impactful fresh catalyst (<= 12h old when timestamped) for a specific symbol:
     (sentiment_label, score, headline) or None if no high-impact catalyst found.
     """
     articles = fetch_latest_news(limit=25)
+    now_ts = time.time()
     for art in articles:
+        if art.published_ts is not None and (now_ts - art.published_ts) > max_age_seconds:
+            continue
         if symbol in art.affected_symbols and art.impact_level in ("HIGH", "CRITICAL") and art.sentiment_label != "Neutral":
             return art.sentiment_label, art.sentiment_score, art.title
     return None
+
+
+def should_pause_for_news_whipsaw(symbol: str, max_age_seconds: int = 2700) -> tuple[bool, str]:
+    """
+    Detects fresh (<= 45m) critical market shocks (hacks, exploits, stablecoin depegs,
+    emergency macro/FOMC/CPI surprises) where violent two-way wicks trap new entries.
+    """
+    import os
+    if os.getenv("BACKTEST_MODE") or os.getenv("PYTEST_CURRENT_TEST"):
+        return False, ""
+
+    articles = fetch_latest_news(limit=25)
+    if not articles:
+        return False, ""
+
+    now_ts = time.time()
+    macro_shocks = ("fomc", "fed rate decision", "cpi report", "emergency rate", "flash crash")
+    for art in articles:
+        if art.published_ts is None or (now_ts - art.published_ts) > max_age_seconds:
+            continue
+        text = f"{art.title} {art.body}".lower()
+        is_macro_shock = any(re.search(r"\b" + re.escape(k) + r"\b", text) for k in macro_shocks)
+        is_asset_shock = (
+            symbol in art.affected_symbols
+            and art.impact_level == "CRITICAL"
+            and any(re.search(r"\b" + re.escape(k) + r"\b", text) for k in _WHIPSAW_PAUSE_KEYWORDS)
+        )
+        if is_macro_shock or is_asset_shock:
+            return True, f"Breaking news whipsaw guard ({art.source}): {art.title[:75]}"
+    return False, ""
 
 
 def format_news_summary(limit: int = 5) -> str:

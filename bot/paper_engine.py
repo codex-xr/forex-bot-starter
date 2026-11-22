@@ -62,6 +62,7 @@ class PaperPosition:
     leverage: float = 1.0
     status: str = "OPEN"
     user_id: str = "default"
+    confidence: int | None = None
 
 
 @dataclass
@@ -83,6 +84,7 @@ class PaperTradeHistory:
     date_str: str  # "YYYY-MM-DD" in UTC
     leverage: float = 1.0
     user_id: str = "default"
+    confidence: int | None = None
 
 
 @dataclass
@@ -193,6 +195,7 @@ class PaperStore:
                         leverage=float(pos_dict.get("leverage", 1.0)),
                         status=pos_dict.get("status", "OPEN"),
                         user_id=pos_dict.get("user_id", norm_uid),
+                        confidence=int(pos_dict["confidence"]) if pos_dict.get("confidence") is not None else None,
                     )
                 history = []
                 for h_dict in udict.get("history", []):
@@ -215,6 +218,7 @@ class PaperStore:
                             date_str=h_dict.get("date_str", ""),
                             leverage=float(h_dict.get("leverage", 1.0)),
                             user_id=h_dict.get("user_id", norm_uid),
+                            confidence=int(h_dict["confidence"]) if h_dict.get("confidence") is not None else None,
                         )
                     )
                 store.users[norm_uid] = UserPaperState(
@@ -502,6 +506,7 @@ def open_paper_trade(
     user_id: str | int | None = None,
     order_type: str = "MARKET",
     current_price: float | None = None,
+    confidence: int | None = None,
 ) -> tuple[bool, str, dict | None]:
     """
     Opens a simulated paper trade with exact TP1 and SL limits and leverage for the given user.
@@ -558,6 +563,7 @@ def open_paper_trade(
     else:
         pos_status = "OPEN"
 
+    conf_val = int(confidence) if confidence is not None else None
     position = PaperPosition(
         id=pos_id,
         symbol=symbol,
@@ -573,6 +579,7 @@ def open_paper_trade(
         leverage=trade_lev,
         status=pos_status,
         user_id=uid,
+        confidence=conf_val,
     )
 
     ustate.positions[pos_id] = position
@@ -580,11 +587,13 @@ def open_paper_trade(
 
     dir_emoji = "🟢 LONG" if clean_action == "BUY" else "🔴 SHORT"
     lev_text = f"{trade_lev:g}x"
+    conf_line = f"• <b>Signal Confidence:</b> <code>{conf_val}%</code>\n" if conf_val is not None else ""
 
     if is_pending:
         msg = (
             f"🚀 <b>Paper Trade Entered! (Pending Limit Order)</b>\n\n"
             f"• <b>Asset:</b> <code>{display_sym}</code> ({dir_emoji} LIMIT)\n"
+            f"{conf_line}"
             f"• <b>Leverage:</b> <code>{lev_text}</code>\n"
             f"• <b>Limit Entry:</b> <code>{_fmt_price(entry_price)}</code>\n"
             f"• <b>Current Market:</b> <code>{_fmt_price(current_price or entry_price)}</code>\n"
@@ -598,6 +607,7 @@ def open_paper_trade(
         msg = (
             f"🚀 <b>Paper Trade Entered!</b>\n\n"
             f"• <b>Asset:</b> <code>{display_sym}</code> ({dir_emoji})\n"
+            f"{conf_line}"
             f"• <b>Leverage:</b> <code>{lev_text}</code>\n"
             f"• <b>Entry Price:</b> <code>{_fmt_price(entry_price)}</code>\n"
             f"• <b>Position Margin:</b> <code>${trade_size:,.2f}</code> (Notional: <code>${notional_size:,.2f}</code>)\n"
@@ -717,6 +727,7 @@ def close_paper_trade(
         date_str=date_str,
         leverage=position.leverage,
         user_id=target_uid or "default",
+        confidence=getattr(position, "confidence", None),
     )
 
     del target_ustate.positions[pos_id]
@@ -733,10 +744,13 @@ def close_paper_trade(
         "MANUAL_CLOSE": "✋ Manually Closed",
     }
     reason_text = reason_labels.get(reason, reason)
+    pos_conf = getattr(position, "confidence", None)
+    conf_line = f"• <b>Signal Confidence:</b> <code>{pos_conf}%</code>\n" if pos_conf is not None else ""
 
     msg = (
         f"{pnl_emoji} <b>Paper Trade Closed ({reason_text})</b>\n\n"
         f"• <b>Asset:</b> <code>{position.display_symbol}</code> ({position.action}{lev_str})\n"
+        f"{conf_line}"
         f"• <b>Entry Price:</b> <code>{_fmt_price(position.entry_price)}</code>\n"
         f"• <b>Exit Price:</b> <code>{_fmt_price(exit_price)}</code>\n"
         f"• <b>Realized ROE / PnL:</b> <b>{pnl_sign}${pnl_usd:,.2f}</b> ({pnl_sign}{pnl_pct:.2f}%)\n"
@@ -1031,9 +1045,11 @@ def get_status_report(user_id: str | int | None = None) -> tuple[str, dict | Non
                 curr_price = cached[1]
 
             lev_tag = f" ({pos.leverage:g}x)" if pos.leverage > 1.0 else ""
+            pos_conf = getattr(pos, "confidence", None)
+            conf_tag = f" | <b>Conf:</b> <code>{pos_conf}%</code>" if pos_conf is not None else ""
             if getattr(pos, "status", "OPEN") == "PENDING_LIMIT":
                 side_str = f"⏳ PENDING {pos.action} LIMIT{lev_tag}"
-                lines.append(f"<b>{idx}. {pos.display_symbol}</b> ({side_str})")
+                lines.append(f"<b>{idx}. {pos.display_symbol}</b> ({side_str}){conf_tag}")
                 lines.append(f"   • Limit Entry: <code>{_fmt_price(pos.entry_price)}</code> | Current: <code>{_fmt_price(curr_price)}</code>")
                 lines.append(f"   • TP1: <code>{_fmt_price(pos.tp1)}</code> | SL: <code>{_fmt_price(pos.sl)}</code>")
                 lines.append(f"   • Status: ⏳ <b>Pending Fill</b> (Waiting for pullback)")
@@ -1055,7 +1071,7 @@ def get_status_report(user_id: str | int | None = None) -> tuple[str, dict | Non
                 pnl_sign = "+" if pnl_usd >= 0 else ""
                 pnl_icon = "🟢" if pnl_usd >= 0 else "🔴"
 
-                lines.append(f"<b>{idx}. {pos.display_symbol}</b> ({side_str})")
+                lines.append(f"<b>{idx}. {pos.display_symbol}</b> ({side_str}){conf_tag}")
                 lines.append(f"   • Entry: <code>{_fmt_price(pos.entry_price)}</code> | Current: <code>{_fmt_price(curr_price)}</code>")
                 lines.append(f"   • TP1: <code>{_fmt_price(pos.tp1)}</code> | SL: <code>{_fmt_price(pos.sl)}</code>")
                 lines.append(f"   • Unrealized ROE: {pnl_icon} <b>{pnl_sign}${pnl_usd:,.2f}</b> ({pnl_sign}{pnl_pct:.2f}%)")
@@ -1171,12 +1187,14 @@ def get_daily_summary_report(target_date: str | None = None, user_id: str | int 
     lines.append(f"📊 <b>Total Trades Today:</b> <code>{total_closed + len(open_positions)}</code> (<code>{total_closed}</code> Closed | <code>{len(open_positions)}</code> Ongoing)")
     lines.append("")
 
-    # 1. List all closed trades taken today with Time Taken + Result + PnL
+    # 1. List all closed trades taken today with Time Taken + Result + PnL + Confidence
     if day_trades:
         lines.append(f"📋 <b>Closed Trades Today ({total_closed}):</b>")
         for idx, t in enumerate(day_trades, 1):
             t_taken = _fmt_time_taken(t.entry_time, today_str)
             lev_tag = f" {t.leverage:g}x" if getattr(t, "leverage", 1.0) > 1.0 else ""
+            t_conf = getattr(t, "confidence", None)
+            conf_tag = f" | 🎯 Conf: <code>{t_conf}%</code>" if t_conf is not None else ""
             t_sign = "+" if t.pnl_usd >= 0 else ""
             if t.pnl_usd > 0:
                 res_badge = f"✅ WIN ({t.exit_reason})"
@@ -1186,23 +1204,25 @@ def get_daily_summary_report(target_date: str | None = None, user_id: str | int 
                 p_icon = "🔴"
             lines.append(
                 f"   <b>{idx}. {t.display_symbol}</b> ({t.action}{lev_tag}) — <b>{res_badge}</b>\n"
-                f"      ⏰ Taken: <code>{t_taken}</code> | <code>{_fmt_price(t.entry_price)} → {_fmt_price(t.exit_price)}</code>\n"
+                f"      ⏰ Taken: <code>{t_taken}</code>{conf_tag} | <code>{_fmt_price(t.entry_price)} → {_fmt_price(t.exit_price)}</code>\n"
                 f"      💵 Result: {p_icon} <b>{t_sign}${t.pnl_usd:,.2f} ({t_sign}{t.pnl_pct:.2f}%)</b>"
             )
         lines.append("")
 
-    # 2. List all ongoing trades still running with Time Taken + PnL So Far
+    # 2. List all ongoing trades still running with Time Taken + PnL So Far + Confidence
     if open_positions:
         lines.append(f"⏳ <b>Ongoing Trades Still On ({len(open_positions)}):</b>")
         total_floating_usd = 0.0
         for idx, pos in enumerate(open_positions, 1):
             t_taken = _fmt_time_taken(pos.entry_time, today_str)
             lev_tag = f" {pos.leverage:g}x" if getattr(pos, "leverage", 1.0) > 1.0 else ""
+            pos_conf = getattr(pos, "confidence", None)
+            conf_tag = f" | 🎯 Conf: <code>{pos_conf}%</code>" if pos_conf is not None else ""
             curr_price = _resolve_live_price_for_pos(pos)
             if getattr(pos, "status", "OPEN") == "PENDING_LIMIT":
                 lines.append(
                     f"   <b>{idx}. {pos.display_symbol}</b> ({pos.action}{lev_tag}) — ⏳ <b>PENDING LIMIT</b>\n"
-                    f"      ⏰ Taken: <code>{t_taken}</code> | Limit: <code>{_fmt_price(pos.entry_price)}</code> (Now: <code>{_fmt_price(curr_price)}</code>)\n"
+                    f"      ⏰ Taken: <code>{t_taken}</code>{conf_tag} | Limit: <code>{_fmt_price(pos.entry_price)}</code> (Now: <code>{_fmt_price(curr_price)}</code>)\n"
                     f"      📊 PnL So Far: <code>$0.00 (Waiting for fill)</code>"
                 )
             else:
@@ -1216,7 +1236,7 @@ def get_daily_summary_report(target_date: str | None = None, user_id: str | int 
                 fl_icon = "🟢" if fl_usd >= 0 else "🔴"
                 lines.append(
                     f"   <b>{idx}. {pos.display_symbol}</b> ({pos.action}{lev_tag}) — ⚡ <b>ONGOING</b>\n"
-                    f"      ⏰ Taken: <code>{t_taken}</code> | <code>{_fmt_price(pos.entry_price)} → {_fmt_price(curr_price)}</code>\n"
+                    f"      ⏰ Taken: <code>{t_taken}</code>{conf_tag} | <code>{_fmt_price(pos.entry_price)} → {_fmt_price(curr_price)}</code>\n"
                     f"      📊 PnL So Far: {fl_icon} <b>{fl_sign}${fl_usd:,.2f} ({fl_sign}{fl_pct:.2f}%)</b>"
                 )
         tot_fl_sign = "+" if total_floating_usd >= 0 else ""
@@ -1279,8 +1299,10 @@ def get_trade_history_report(limit: int = 10, user_id: str | int | None = None) 
     for h in reversed(history):
         pnl_icon = "🟢" if h.pnl_usd >= 0 else "🔴"
         pnl_sign = "+" if h.pnl_usd >= 0 else ""
+        h_conf = getattr(h, "confidence", None)
+        conf_str = f" | Conf: <code>{h_conf}%</code>" if h_conf is not None else ""
         lines.append(
-            f"{pnl_icon} <b>{h.display_symbol}</b> ({h.action}) — {h.exit_reason}\n"
+            f"{pnl_icon} <b>{h.display_symbol}</b> ({h.action}) — {h.exit_reason}{conf_str}\n"
             f"   • Entry: <code>{_fmt_price(h.entry_price)}</code> $\\rightarrow$ Exit: <code>{_fmt_price(h.exit_price)}</code>\n"
             f"   • PnL: <b>{pnl_sign}${h.pnl_usd:,.2f}</b> ({pnl_sign}{h.pnl_pct:.2f}%)\n"
             f"   • Date: <code>{h.exit_time}</code>"

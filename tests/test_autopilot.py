@@ -54,7 +54,7 @@ class TestAutoPilot(unittest.TestCase):
         self.assertIn("EURUSD", sent_text)
         self.assertIn("BUY SETUP", sent_text)
         kb = mock_send.call_args[1]["reply_markup"]["inline_keyboard"]
-        self.assertEqual(kb[0][0]["callback_data"], "paper_enter:EUR_USD:BUY")
+        self.assertEqual(kb[0][0]["callback_data"], "paper_enter:EUR_USD:BUY:90")
 
         # Second attempt should be blocked by cooldown
         mock_send.reset_mock()
@@ -76,4 +76,4 @@ class TestAutoPilot(unittest.TestCase):
         self.assertEqual(mock_send.call_count, 2)
         sent_chat_ids = [c.kwargs["chat_id"] for c in mock_send.call_args_list]
         self.assertEqual(sent_chat_ids, [6686703329, 111222])
-        self.assertEqual(mock_send.call_args_list[0].kwargs["reply_markup"]["inline_keyboard"][0][0]["callback_data"], "paper_enter:BTC_USD:BUY")
+        self.assertEqual(mock_send.call_args_list[0].kwargs["reply_markup"]["inline_keyboard"][0][0]["callback_data"], "paper_enter:BTC_USD:BUY:82")

@@ -444,11 +444,15 @@ def handle_callback_query(callback_query: dict) -> None:
         if len(parts) >= 3:
             symbol = normalize_symbol(parts[1])
             action = parts[2]
+            btn_conf = int(parts[3]) if len(parts) >= 4 and parts[3].strip().isdigit() else None
             try:
                 candles = fetch_live_candles(symbol)
                 report = analyze_setup(symbol, candles, min_confidence=60)
+                trade_conf = btn_conf if btn_conf is not None else (report.confidence if report.action == action else None)
                 if report.action != action or not report.stop_loss or not (report.tp1 or report.take_profit):
                     report = compute_trade_levels(symbol, action, candles)
+                    if trade_conf is None:
+                        trade_conf = report.confidence
                 curr_close = float(candles.iloc[-1]["close"])
                 entry = report.entry or curr_close
                 sl = report.stop_loss or (entry * 0.985 if action == "BUY" else entry * 1.015)
@@ -458,6 +462,7 @@ def handle_callback_query(callback_query: dict) -> None:
                 ok, enter_msg, _ = open_paper_trade(
                     symbol, action, entry, sl, tp1, user_id=chat_id,
                     order_type=order_type, current_price=curr_close,
+                    confidence=trade_conf,
                 )
                 send_telegram_message(enter_msg, chat_id=chat_id)
             except Exception as e:
@@ -1325,8 +1330,11 @@ def handle_message(message: dict) -> None:
                         }
                         send_telegram_message(wait_msg, chat_id=chat_id, reply_markup=force_kb)
                         return
+                    trade_conf = report.confidence if report.action == action else None
                     if report.action != action or not report.stop_loss or not (report.tp1 or report.take_profit):
                         report = compute_trade_levels(target_sym, action, candles)
+                        if trade_conf is None:
+                            trade_conf = report.confidence
                     curr_close = float(candles.iloc[-1]["close"])
                     entry = report.entry or curr_close
                     sl = report.stop_loss or (entry * 0.985 if action == "BUY" else entry * 1.015)
@@ -1336,6 +1344,7 @@ def handle_message(message: dict) -> None:
                     ok, enter_msg, _ = open_paper_trade(
                         target_sym, action, entry, sl, tp1, user_id=chat_id,
                         order_type=order_type, current_price=curr_close,
+                        confidence=trade_conf,
                     )
                     send_telegram_message(enter_msg, chat_id=chat_id)
                 except Exception as e:
@@ -1378,7 +1387,7 @@ def handle_message(message: dict) -> None:
                     for stp in setups:
                         disp = DISPLAY_NAMES.get(stp.symbol, stp.symbol.replace("_", "/"))
                         btn_text = f"🚀 Enter {disp} ({stp.action})"
-                        buttons.append([{"text": btn_text, "callback_data": f"paper_enter:{stp.symbol}:{stp.action}"}])
+                        buttons.append([{"text": btn_text, "callback_data": f"paper_enter:{stp.symbol}:{stp.action}:{stp.confidence}"}])
                     reply_markup = {"inline_keyboard": buttons}
                 send_telegram_message(message_text, chat_id=chat_id, reply_markup=reply_markup)
                 return

@@ -58,6 +58,7 @@ class PolyClosedTrade:
     entry_time: str
     exit_time: str
     exit_date: str
+    confidence: int | None = None
 
 
 @dataclass
@@ -398,6 +399,7 @@ def close_poly_trade(
         entry_time=pos.entry_time,
         exit_time=now.strftime("%Y-%m-%d %H:%M UTC"),
         exit_date=now.strftime("%Y-%m-%d"),
+        confidence=getattr(pos, "confidence", None),
     )
     ustate.closed_trades.append(closed)
     _save_poly_store(store)
@@ -785,12 +787,14 @@ def get_poly_daily_summary_report(
         for idx, t in enumerate(day_trades, 1):
             short_q = t.question[:42] + "..." if len(t.question) > 42 else t.question
             t_taken = t.entry_time[len(today_str):].strip() if (t.entry_time and t.entry_time.startswith(today_str)) else (t.entry_time or "N/A")
+            t_conf = getattr(t, "confidence", None)
+            conf_tag = f" | 🎯 Conf: <code>{t_conf}%</code>" if t_conf is not None else ""
             t_sign = "+" if t.pnl_usd >= 0 else ""
             res_badge = f"✅ WIN ({t.exit_reason})" if t.pnl_usd > 0 else f"🛑 LOSS ({t.exit_reason})"
             p_icon = "🟢" if t.pnl_usd > 0 else "🔴"
             lines.append(
                 f"   <b>{idx}. {html.escape(short_q)}</b> (BUY {t.side}) — <b>{res_badge}</b>\n"
-                f"      ⏰ Taken: <code>{html.escape(t_taken)}</code> | <code>{t.entry_price * 100:.1f}¢ → {t.exit_price * 100:.1f}¢</code>\n"
+                f"      ⏰ Taken: <code>{html.escape(t_taken)}</code>{conf_tag} | <code>{t.entry_price * 100:.1f}¢ → {t.exit_price * 100:.1f}¢</code>\n"
                 f"      💵 Result: {p_icon} <b>{t_sign}${t.pnl_usd:,.2f} ({t_sign}{t.pnl_pct:.1f}%)</b>"
             )
         lines.append("")
@@ -801,6 +805,8 @@ def get_poly_daily_summary_report(
         for idx, pos in enumerate(open_positions, 1):
             short_q = pos.question[:42] + "..." if len(pos.question) > 42 else pos.question
             t_taken = pos.entry_time[len(today_str):].strip() if (pos.entry_time and pos.entry_time.startswith(today_str)) else (pos.entry_time or "N/A")
+            pos_conf = getattr(pos, "confidence", None)
+            conf_tag = f" | 🎯 Conf: <code>{pos_conf}%</code>" if pos_conf is not None else ""
             live_p, _, _ = get_live_share_price(pos.market_id, pos.side)
             curr_p = live_p if (live_p is not None and live_p >= 0) else pos.entry_price
             fl_usd = pos.shares * (curr_p - pos.entry_price)
@@ -810,7 +816,7 @@ def get_poly_daily_summary_report(
             fl_icon = "🟢" if fl_usd >= 0 else "🔴"
             lines.append(
                 f"   <b>{idx}. {html.escape(short_q)}</b> (BUY {pos.side}) — ⚡ <b>ONGOING</b>\n"
-                f"      ⏰ Taken: <code>{html.escape(t_taken)}</code> | <code>{pos.entry_price * 100:.1f}¢ → {curr_p * 100:.1f}¢</code>\n"
+                f"      ⏰ Taken: <code>{html.escape(t_taken)}</code>{conf_tag} | <code>{pos.entry_price * 100:.1f}¢ → {curr_p * 100:.1f}¢</code>\n"
                 f"      📊 PnL So Far: {fl_icon} <b>{fl_sign}${fl_usd:,.2f} ({fl_sign}{fl_pct:.1f}%)</b>"
             )
         tot_fl_sign = "+" if total_floating_pnl >= 0 else ""

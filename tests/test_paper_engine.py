@@ -739,6 +739,53 @@ class TestPendingLimitOrders:
         store = _load_paper_store()
         assert pos["id"] in store.get_user_state(user).positions
 
+    def test_summary_and_status_include_signal_confidence(self):
+        from bot.telegram_commands import handle_callback_query
+        from bot.paper_engine import _LATEST_PRICE_CACHE
+        _LATEST_PRICE_CACHE.clear()
+        user = "conf_doc_user"
+
+        live_df = pd.DataFrame([{"open": 150.0, "high": 152.0, "low": 149.0, "close": 151.0}])
+        with patch("bot.paper_engine.fetch_live_candles", return_value=live_df):
+            # Ongoing position shows confidence in /status and /summary
+            ok, enter_msg, pos = open_paper_trade(
+                "SOL_USD", "BUY", 150.0, 145.0, 155.0, user_id=user, confidence=86
+            )
+            assert ok is True
+            assert "86%</code>" in enter_msg
+
+            status_text, _ = get_status_report(user_id=user)
+            assert "86%" in status_text
+
+            sum_open = get_daily_summary_report(user_id=user)
+            assert "Ongoing Trades Still On" in sum_open
+            assert "Conf: <code>86%</code>" in sum_open
+
+            # Closed trade preserves confidence in /summary and /history
+            c_ok, close_msg, hist = close_paper_trade(pos["id"], 155.0, reason="TP1_HIT", user_id=user)
+            assert c_ok is True
+            assert hist["confidence"] == 86
+            assert "86%" in close_msg
+
+            sum_closed = get_daily_summary_report(user_id=user)
+            assert "Closed Trades Today" in sum_closed
+            assert "Conf: <code>86%</code>" in sum_closed
+            assert "86%" in get_trade_history_report(user_id=user)
+
+        # Callback button embeds original confidence even if setup shifted
+        mock_df = pd.DataFrame([{"open": 25.0, "high": 26.0, "low": 24.0, "close": 25.5}] * 100)
+        with patch("bot.telegram_commands.fetch_live_candles", return_value=mock_df), \
+             patch("bot.telegram_commands.send_telegram_message") as mock_send, \
+             patch("bot.telegram_commands.telegram_request"), \
+             patch("bot.telegram_commands.is_user_authorized", return_value=(True, "active")):
+            handle_callback_query({
+                "id": "cb_conf",
+                "from": {"id": 888333},
+                "message": {"chat": {"id": 888333}},
+                "data": "paper_enter:AVAX_USD:BUY:84",
+            })
+        assert "84%</code>" in mock_send.call_args[0][0]
+
 
 
 

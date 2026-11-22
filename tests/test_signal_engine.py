@@ -558,6 +558,14 @@ class TestRSIExhaustionGuard:
         assert s_vwap.action in ("BUY", "SELL", "HOLD")
         assert s_sqz.action in ("BUY", "SELL", "HOLD")
 
+    def test_fallback_capped_below_autopilot_threshold(self):
+        # Even a clean steady uptrend without a primary pattern stays below 75% AutoPilot bar
+        data = compute_indicators(_ohcv_close([100.0 + i * 0.5 for i in range(100)]))
+        strategies = [StrategySignal("None", "HOLD", 0, "")]
+        report = _quality_gate(strategies, "bullish", data, "BTC_USD", min_confidence=75)
+        assert report.action == "WAIT"
+        assert report.confidence < 75
+
 
 
 
