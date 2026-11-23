@@ -15,10 +15,87 @@ from bot.access_control import get_crypto_signal_recipients
 from bot.market_data import fetch_live_candles
 from bot.session_bot import ALL_WATCHLIST
 from bot.signal_engine import analyze_setup
-from bot.symbols import DISPLAY_NAMES
+from bot.symbols import DISPLAY_NAMES, normalize_symbol
 from bot.telegram import send_telegram_message
 
 REDIS_AUTOPILOT_KEY = "autopilot_store_data"
+_SIGNAL_SNAPSHOTS: dict[str, dict] = {}
+
+
+def _normalize_schedule_mode(mode: str | None) -> str:
+    m = (mode or "").strip().lower()
+    if m in ("golden", "golden_wat", "wat", "hours", "best"):
+        return "golden_wat"
+    return "24/7"
+
+
+def record_signal_snapshot(
+    symbol: str,
+    action: str,
+    entry: float | None,
+    tp1: float | None = None,
+    sl: float | None = None,
+    confidence: int | None = None,
+) -> None:
+    """Stores the original signal price and timestamp so late 1-tap Enter clicks can warn against chasing."""
+    if entry is None or entry <= 0 or action not in ("BUY", "SELL"):
+        return
+    norm_sym = normalize_symbol(symbol)
+    key = f"{norm_sym}_{action}"
+    snap = {
+        "entry": float(entry),
+        "tp1": float(tp1) if tp1 else None,
+        "sl": float(sl) if sl else None,
+        "confidence": confidence,
+        "ts": time.time(),
+    }
+    _SIGNAL_SNAPSHOTS[key] = snap
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return
+    url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+    token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+    if url and token:
+        try:
+            requests.post(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                json=["SET", f"signal_snap:{key}", json.dumps(snap), "EX", "3600"],
+                timeout=1.5,
+            )
+        except Exception:
+            pass
+
+
+def get_signal_snapshot(symbol: str, action: str) -> dict | None:
+    """Fetches a recent signal snapshot (< 60m old) from memory or Upstash Redis."""
+    norm_sym = normalize_symbol(symbol)
+    key = f"{norm_sym}_{action}"
+    now = time.time()
+    snap = _SIGNAL_SNAPSHOTS.get(key)
+    if snap and (now - float(snap.get("ts") or 0.0)) <= 3600.0:
+        return snap
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return None
+    url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+    token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+    if not url or not token:
+        return None
+    try:
+        res = requests.get(
+            f"{url}/get/signal_snap:{key}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=1.5,
+        )
+        if res.status_code == 200:
+            raw = res.json().get("result")
+            if isinstance(raw, str) and raw:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict) and (now - float(parsed.get("ts") or 0.0)) <= 3600.0:
+                    _SIGNAL_SNAPSHOTS[key] = parsed
+                    return parsed
+    except Exception:
+        pass
+    return None
 
 
 class AutoPilot:
@@ -35,11 +112,13 @@ class AutoPilot:
         cooldown_seconds: int = 3600,
         scan_delay_seconds: float = 45.0,
         broadcast_to_vips: bool = False,
+        schedule_mode: str = "24/7",
     ) -> None:
         self.min_confidence = min_confidence
         self.cooldown_seconds = cooldown_seconds
         self.scan_delay_seconds = scan_delay_seconds
         self.broadcast_to_vips = broadcast_to_vips
+        self.schedule_mode = _normalize_schedule_mode(schedule_mode)
         self.is_active = True
         self.last_alerts: dict[str, float] = {}
         self.alert_history: list[dict] = []
@@ -47,6 +126,19 @@ class AutoPilot:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+
+    def is_within_scan_window(self, now_utc: datetime | None = None) -> bool:
+        """Returns True if Auto-Pilot is allowed to hunt new signals at this hour."""
+        if self.schedule_mode != "golden_wat":
+            return True
+        dt = now_utc or datetime.now(timezone.utc)
+        wat_hour = (dt.hour + 1) % 24
+        return (8 <= wat_hour <= 12) or (16 <= wat_hour <= 17)
+
+    def set_schedule_mode(self, mode: str) -> str:
+        self.schedule_mode = _normalize_schedule_mode(mode)
+        self._save_to_cloud()
+        return self.schedule_mode
 
     def _sync_from_cloud(self, force: bool = False) -> None:
         if os.getenv("PYTEST_CURRENT_TEST"):
@@ -72,6 +164,8 @@ class AutoPilot:
                     with self._lock:
                         if "is_active" in data:
                             self.is_active = bool(data["is_active"])
+                        if "schedule_mode" in data:
+                            self.schedule_mode = _normalize_schedule_mode(data["schedule_mode"])
                         if isinstance(data.get("last_alerts"), dict):
                             cutoff = now - (self.cooldown_seconds * 2)
                             self.last_alerts = {
@@ -97,6 +191,7 @@ class AutoPilot:
                 pruned_alerts = {k: v for k, v in self.last_alerts.items() if v >= cutoff}
                 payload = {
                     "is_active": self.is_active,
+                    "schedule_mode": self.schedule_mode,
                     "last_alerts": pruned_alerts,
                     "alert_history": self.alert_history[-20:],
                 }
@@ -109,6 +204,27 @@ class AutoPilot:
             self._last_sync_ts = time.time()
         except Exception as exc:
             print(f"[AutoPilot] Cloud save error: {exc}")
+
+    def _claim_cloud_alert_lock(self, symbol: str, action: str) -> bool:
+        """Atomically claims a cloud alert lock so simultaneous triggers never double-send the same signal."""
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            return True
+        url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+        token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+        if not url or not token:
+            return True
+        try:
+            res = requests.post(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                json=["SET", f"autopilot_lock:{symbol}_{action}", str(time.time()), "NX", "EX", str(self.cooldown_seconds)],
+                timeout=2.0,
+            )
+            if res.status_code == 200:
+                return res.json().get("result") == "OK"
+        except Exception:
+            pass
+        return True
 
     def is_on_cooldown(self, symbol: str, action: str) -> bool:
         self._sync_from_cloud()
@@ -138,7 +254,7 @@ class AutoPilot:
     def scan_single_symbol(self, symbol: str) -> bool:
         """Scans a single symbol and sends a live call if a valid setup is detected. Returns True if sent."""
         self._sync_from_cloud()
-        if not self.is_active:
+        if not self.is_active or not self.is_within_scan_window():
             return False
 
         try:
@@ -152,8 +268,10 @@ class AutoPilot:
         if report.action not in ("BUY", "SELL"):
             return False
 
-        # Anti-spam cooldown check
+        # Anti-spam cooldown check & atomic cloud lock against overlapping triggers
         if self.is_on_cooldown(symbol, report.action):
+            return False
+        if not self._claim_cloud_alert_lock(symbol, report.action):
             return False
 
         disp = DISPLAY_NAMES.get(symbol, symbol.replace("_", "/"))
@@ -169,7 +287,15 @@ class AutoPilot:
             ]
         }
 
-        # Record cooldown immediately before fan-out to prevent concurrent duplicate calls
+        # Record cooldown & signal snapshot immediately before fan-out
+        record_signal_snapshot(
+            symbol,
+            report.action,
+            report.entry,
+            report.tp1 or report.take_profit,
+            report.stop_loss,
+            report.confidence,
+        )
         self.record_alert(symbol, report.action, report.confidence, report.reason)
 
         if self.broadcast_to_vips:
@@ -192,7 +318,7 @@ class AutoPilot:
     def run_cycle(self) -> list[str]:
         """Runs one fast concurrent sweep across all monitored crypto & memecoin symbols."""
         self._sync_from_cloud(force=True)
-        if not self.is_active:
+        if not self.is_active or not self.is_within_scan_window():
             return []
 
         try:
@@ -259,11 +385,24 @@ class AutoPilot:
 
     def get_status_text(self) -> str:
         self._sync_from_cloud(force=True)
-        state = "🟢 ACTIVE (Running 24/7)" if self.is_active else "🔴 PAUSED"
+        if not self.is_active:
+            state = "🔴 PAUSED"
+        elif self.schedule_mode == "golden_wat":
+            in_win = self.is_within_scan_window()
+            win_tag = "Inside Window" if in_win else "Waiting for Window"
+            state = f"🌟 GOLDEN HOURS ONLY ({win_tag})"
+        else:
+            state = "🟢 ACTIVE (Running 24/7)"
+        mode_label = (
+            "Golden Hours Only (8AM–1PM & 4PM–6PM WAT)"
+            if self.schedule_mode == "golden_wat"
+            else "24/7 All Hours"
+        )
         lines = [
             "🤖 <b>Auto-Pilot Live Calls Status</b>",
             "",
             f"• <b>Status:</b> {state}",
+            f"• <b>Scan Hours:</b> <code>{mode_label}</code>",
             f"• <b>Markets:</b> <code>Crypto & Memecoins ({len(ALL_WATCHLIST)} pairs)</code>",
             f"• <b>Min Confidence:</b> <code>{self.min_confidence}%</code> (A+ Setups Only)",
             "• <b>Recipients:</b> <code>Admin + Active Crypto/Bundle VIPs</code>",
@@ -316,10 +455,17 @@ def run_cron_cycle(run_autopilot: bool = True) -> dict:
         except Exception as exc:
             print(f"[Cron Scan] AutoPilot cycle error: {exc}")
 
+    will_scan = bool(run_autopilot and autopilot and autopilot.is_active and autopilot.is_within_scan_window())
+    mode_val = getattr(autopilot, "schedule_mode", "24/7") if autopilot else "24/7"
+    if mode_val not in ("24/7", "golden_wat"):
+        mode_val = "24/7"
+
     return {
         "ok": True,
         "status": "success",
-        "symbols_scanned": len(ALL_WATCHLIST) if run_autopilot else 0,
+        "symbols_scanned": len(ALL_WATCHLIST) if will_scan else 0,
+        "schedule_mode": mode_val,
+        "within_scan_window": bool(autopilot.is_within_scan_window()) if autopilot else True,
         "alerts_triggered": alerts,
         "paper_trade_alerts": len(paper_trade_alerts),
         "poly_trade_alerts": len(poly_trade_alerts),

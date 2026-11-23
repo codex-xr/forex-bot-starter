@@ -83,6 +83,8 @@ class MultiUserPolyStore:
 
 _POLY_STORE: MultiUserPolyStore | None = None
 _LAST_POLY_SYNC_TS: float = 0.0
+_POLY_CLOUD_LOAD_FAILED: bool = False
+_POLY_HAS_CLOUD_STATE: bool = False
 
 
 def _get_poly_store_path() -> Path:
@@ -100,6 +102,7 @@ def _get_poly_store_path() -> Path:
 
 
 def _load_poly_from_cloud() -> dict | None:
+    global _POLY_CLOUD_LOAD_FAILED, _POLY_HAS_CLOUD_STATE
     url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
     token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
     if not url or not token:
@@ -109,18 +112,22 @@ def _load_poly_from_cloud() -> dict | None:
         try:
             res = requests.get(f"{url}/get/poly_paper_multi_store", headers=headers, timeout=5)
             if res.status_code == 200:
+                _POLY_CLOUD_LOAD_FAILED = False
                 val = res.json().get("result")
                 if val:
+                    _POLY_HAS_CLOUD_STATE = True
                     return json.loads(val) if isinstance(val, str) else val
-            return None
+                return None
         except Exception as exc:
             if attempt == 1:
                 print(f"[PolyPaperEngine] Cloud load error: {exc}")
             time.sleep(0.3)
+    _POLY_CLOUD_LOAD_FAILED = True
     return None
 
 
 def _save_poly_to_cloud(data: dict) -> bool:
+    global _POLY_CLOUD_LOAD_FAILED, _POLY_HAS_CLOUD_STATE
     url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
     token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
     if not url or not token:
@@ -136,6 +143,8 @@ def _save_poly_to_cloud(data: dict) -> bool:
                 timeout=5,
             )
             if res.status_code == 200:
+                _POLY_CLOUD_LOAD_FAILED = False
+                _POLY_HAS_CLOUD_STATE = True
                 return True
         except Exception as exc:
             if attempt == 1:
@@ -217,7 +226,10 @@ def _save_poly_store(store: MultiUserPolyStore) -> None:
     except Exception as exc:
         print(f"[PolyPaperEngine] Local save error: {exc}")
 
-    _save_poly_to_cloud(data)
+    if _POLY_CLOUD_LOAD_FAILED and not _POLY_HAS_CLOUD_STATE:
+        print("[PolyPaperEngine] Skipping cloud save because initial cloud load failed (protecting cloud state).")
+    else:
+        _save_poly_to_cloud(data)
 
 
 def get_poly_settings(user_id: int | str | None = None) -> dict:
@@ -416,9 +428,12 @@ def close_poly_trade(
     sign = "+" if pnl_usd >= 0 else ""
     emoji_pnl = "🟢" if is_win else "🔴"
 
+    pos_conf = getattr(pos, "confidence", None)
+    conf_line = f"• <b>Signal Confidence:</b> <code>{pos_conf}%</code>\n" if pos_conf is not None else ""
     msg = (
         f"{header}\n\n"
         f"📌 <b>{html.escape(pos.question)}</b>\n"
+        f"{conf_line}"
         f"• <b>Position:</b> BUY {pos.side} (<code>${pos.bet_size_usd:,.2f}</code> bet)\n"
         f"• <b>Entry Odds:</b> <code>{pos.entry_price * 100:.1f}¢</code> → <b>Exit Odds:</b> <code>{exit_price * 100:.1f}¢</code>\n"
         f"• <b>Realized PnL:</b> {emoji_pnl} <b>{sign}${pnl_usd:,.2f} ({sign}{pnl_pct:.1f}%)</b>\n"

@@ -287,3 +287,34 @@ class TestThreeTierAccessControlAndMenus:
         })
         locked_msg = mock_send.call_args[0][0]
         assert "Prediction Market Signals Locked" in locked_msg
+
+    def test_close_poly_trade_displays_signal_confidence(self):
+        from bot.polymarket_engine import PolymarketSignal
+        from bot.poly_paper_engine import open_poly_trade, close_poly_trade
+
+        sig = PolymarketSignal(
+            market_id="m_conf_1",
+            question="Will BTC break ATH?",
+            category="Crypto",
+            action="BUY YES",
+            side="YES",
+            confidence=84,
+            entry_price=0.55,
+            fair_price=0.68,
+            edge_pct=13.0,
+            tp1=0.72,
+            tp2=0.85,
+            sl=0.42,
+            tp1_roi_pct=30.9,
+            tp2_roi_pct=54.5,
+            sl_roi_pct=-23.6,
+            volume_24h=50000.0,
+            liquidity=25000.0,
+            reason="Strong volume",
+        )
+        ok, _, _ = open_poly_trade(sig, user_id=9090)
+        assert ok is True
+        ok_c, close_msg, _ = close_poly_trade("m_conf_1_YES", exit_price=0.72, reason="TP1_HIT", user_id=9090)
+        assert ok_c is True
+        assert "Signal Confidence:" in close_msg
+        assert "84%" in close_msg

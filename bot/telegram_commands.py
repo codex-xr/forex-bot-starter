@@ -26,7 +26,7 @@ from bot.access_control import (
     process_due_broadcasts,
     _STORE,
 )
-from bot.autopilot import autopilot
+from bot.autopilot import autopilot, record_signal_snapshot, get_signal_snapshot
 from bot.market_data import fetch_live_candles
 from bot.news_engine import format_news_summary
 from bot.paper_engine import (
@@ -43,6 +43,7 @@ from bot.paper_engine import (
     get_paper_settings,
     reset_trade_history,
     reset_paper_account,
+    _fmt_price,
 )
 from bot.polymarket_engine import (
     scan_polymarket_signals,
@@ -284,11 +285,19 @@ Tap any button below or use the simple commands:
 • <code>/time</code> — View recommended daily scan times"""
 
 
-SCAN_TIME_TEXT = """⏰ <b>Recommended Daily Scan Times</b>
+SCAN_TIME_TEXT = """⏰ <b>Recommended Daily Scan Times (WAT / UTC)</b>
 
-• <b>Morning:</b> <code>09:01</code> — <i>(Every 15 mins after that in that hour: <code>09:16</code>, <code>09:31</code>, <code>09:46</code>)</i>
-• <b>Afternoon:</b> <code>15:01</code> — <i>(Every 15 mins after that in that hour: <code>15:16</code>, <code>15:31</code>, <code>15:46</code>)</i>
-• <b>Night:</b> <code>20:01</code> — <i>(Every 15 mins after that in that hour: <code>20:16</code>, <code>20:31</code>, <code>20:46</code>)</i>"""
+🌟 <b>Best Windows (Tested on 2+ Years of Crypto Charts):</b>
+• <b>Golden Morning:</b> <code>08:01 – 12:46 WAT</code> <i>(<code>07:01 – 11:46 UTC</code>)</i>
+  <i>Best hours: <code>08:01</code>, <code>09:01</code>, <code>11:01</code>, <code>12:01 WAT</code></i>
+• <b>Afternoon Sweet Spot:</b> <code>16:01 – 17:46 WAT</code> <i>(<code>15:01 – 16:46 UTC</code>)</i>
+
+⏱️ <b>Exact Minutes Every Hour:</b> <code>:01</code>, <code>:16</code>, <code>:31</code>, <code>:46</code>
+<i>(1 minute after each 15-minute bar closes cleanly)</i>
+
+⚠️ <b>Choppy Hours to Be Careful / Skip:</b>
+• <code>14:00 – 16:00 WAT</code> <i>(US market open fake-outs)</i>
+• <code>18:00 – 21:00 WAT</code> &amp; <code>05:00 – 07:00 WAT</code> <i>(Low-conviction chop)</i>"""
 
 
 USER_HELP_TEXT = (
@@ -394,6 +403,81 @@ def _verify_tier_access(chat_id: int | str, user_info: dict | None, required_tie
     return False
 
 
+def _open_crypto_trade_from_signal(
+    chat_id: int | str,
+    symbol: str,
+    action: str,
+    btn_conf: int | None = None,
+    enforce_fresh_guard: bool = False,
+    candles=None,
+    report=None,
+) -> None:
+    if candles is None:
+        candles = fetch_live_candles(symbol)
+    curr_close = float(candles.iloc[-1]["close"])
+    if report is None:
+        report = analyze_setup(symbol, candles, min_confidence=60)
+
+    if enforce_fresh_guard:
+        snap = get_signal_snapshot(symbol, action)
+        if snap and snap.get("entry"):
+            orig_entry = float(snap["entry"])
+            orig_tp1 = float(snap.get("tp1") or 0.0)
+            orig_ts = float(snap.get("ts") or 0.0)
+            age_mins = max(0, int((time.time() - orig_ts) // 60)) if orig_ts > 0 else 0
+            raw_move_pct = ((curr_close - orig_entry) / orig_entry) * 100.0
+            chase_pct = raw_move_pct if action == "BUY" else -raw_move_pct
+            tp_dist = abs(orig_tp1 - orig_entry) if orig_tp1 > 0 else 0.0
+            progress_tp = (((curr_close - orig_entry) if action == "BUY" else (orig_entry - curr_close)) / tp_dist) if tp_dist > 0 else 0.0
+
+            is_target_hit = tp_dist > 0 and progress_tp >= 0.90
+            is_chased = chase_pct >= 0.50 or progress_tp >= 0.45
+            is_stale_flip = age_mins >= 45 and report.action != action
+            if is_target_hit or is_chased or is_stale_flip:
+                disp = DISPLAY_NAMES.get(symbol, symbol.replace("_", "/"))
+                if is_target_hit:
+                    warn_reason = f"Price already reached near/past the original target (<code>{_fmt_price(orig_tp1)}</code>)."
+                elif is_chased:
+                    warn_reason = f"Price already moved <b>{chase_pct:+.2f}%</b> away from the original Entry Zone (<code>{_fmt_price(orig_entry)}</code>)."
+                else:
+                    warn_reason = f"Signal is <b>{age_mins} minutes old</b> and the setup is no longer active."
+
+                conf_suffix = f":{btn_conf}" if btn_conf is not None else ""
+                warn_msg = (
+                    f"⚠️ <b>Late Entry Warning — {disp} ({action})</b>\n\n"
+                    f"• <b>Original Entry:</b> <code>{_fmt_price(orig_entry)}</code> ({age_mins}m ago)\n"
+                    f"• <b>Current Live Price:</b> <code>{_fmt_price(curr_close)}</code>\n"
+                    f"• <b>Why Paused:</b> {warn_reason}\n\n"
+                    f"<i>Chasing a move that already ran increases risk. Enter anyway or wait for the next clean signal?</i>"
+                )
+                send_telegram_message(
+                    warn_msg,
+                    chat_id=chat_id,
+                    reply_markup={"inline_keyboard": [
+                        [{"text": f"⚡ Enter {disp} Anyway at Live Price", "callback_data": f"paper_force:{symbol}:{action}{conf_suffix}"}],
+                        [{"text": "❌ Skip Signal", "callback_data": "paper_dismiss"}],
+                    ]},
+                )
+                return
+
+    trade_conf = btn_conf if btn_conf is not None else (report.confidence if report.action == action else None)
+    if report.action != action or not report.stop_loss or not (report.tp1 or report.take_profit):
+        report = compute_trade_levels(symbol, action, candles)
+        if trade_conf is None:
+            trade_conf = report.confidence
+    entry = report.entry or curr_close
+    sl = report.stop_loss or (entry * 0.985 if action == "BUY" else entry * 1.015)
+    risk_dist = abs(entry - sl)
+    tp1 = report.tp1 or report.take_profit or (entry + risk_dist if action == "BUY" else entry - risk_dist)
+    order_type = getattr(report, "order_type", "MARKET")
+    _, enter_msg, _ = open_paper_trade(
+        symbol, action, entry, sl, tp1, user_id=chat_id,
+        order_type=order_type, current_price=curr_close,
+        confidence=trade_conf,
+    )
+    send_telegram_message(enter_msg, chat_id=chat_id)
+
+
 def handle_callback_query(callback_query: dict) -> None:
     """Handles button clicks from inline Telegram keyboards."""
     query_id = callback_query.get("id")
@@ -436,35 +520,28 @@ def handle_callback_query(callback_query: dict) -> None:
         )
         return
 
-    # 1. Handle 1-Click Crypto Paper Trade Entry
-    if data.startswith("paper_enter:"):
+    # 1. Handle 1-Click Crypto Paper Trade Entry (with anti-chase guard) & Skip
+    if data == "paper_dismiss":
+        send_telegram_message("👌 Signal skipped — waiting for the next clean setup.", chat_id=chat_id)
+        return
+
+    if data.startswith("paper_enter:") or data.startswith("paper_force:"):
         if not _verify_tier_access(chat_id, user_info, "crypto"):
             return
+        is_forced = data.startswith("paper_force:")
         parts = data.split(":")
         if len(parts) >= 3:
             symbol = normalize_symbol(parts[1])
             action = parts[2]
             btn_conf = int(parts[3]) if len(parts) >= 4 and parts[3].strip().isdigit() else None
             try:
-                candles = fetch_live_candles(symbol)
-                report = analyze_setup(symbol, candles, min_confidence=60)
-                trade_conf = btn_conf if btn_conf is not None else (report.confidence if report.action == action else None)
-                if report.action != action or not report.stop_loss or not (report.tp1 or report.take_profit):
-                    report = compute_trade_levels(symbol, action, candles)
-                    if trade_conf is None:
-                        trade_conf = report.confidence
-                curr_close = float(candles.iloc[-1]["close"])
-                entry = report.entry or curr_close
-                sl = report.stop_loss or (entry * 0.985 if action == "BUY" else entry * 1.015)
-                risk_dist = abs(entry - sl)
-                tp1 = report.tp1 or report.take_profit or (entry + risk_dist if action == "BUY" else entry - risk_dist)
-                order_type = getattr(report, "order_type", "MARKET")
-                ok, enter_msg, _ = open_paper_trade(
-                    symbol, action, entry, sl, tp1, user_id=chat_id,
-                    order_type=order_type, current_price=curr_close,
-                    confidence=trade_conf,
+                _open_crypto_trade_from_signal(
+                    chat_id,
+                    symbol,
+                    action,
+                    btn_conf=btn_conf,
+                    enforce_fresh_guard=(not is_forced),
                 )
-                send_telegram_message(enter_msg, chat_id=chat_id)
             except Exception as e:
                 send_telegram_message(f"❌ Failed to enter paper trade for {symbol}: {e}", chat_id=chat_id)
         return
@@ -1038,41 +1115,63 @@ def handle_message(message: dict) -> None:
                 return
 
             if command in {"/autopilot", "/autopilot_status", "/autopilot_on", "/autopilot_off"}:
-                if command == "/autopilot_on" or subcmd.lower() == "on":
+                ap_kb = [
+                    [
+                        {"text": "🟢 Turn ON", "callback_data": "/autopilot on"},
+                        {"text": "🔴 Turn OFF", "callback_data": "/autopilot off"},
+                    ],
+                    [
+                        {"text": "🌟 Golden Hours Only (WAT)", "callback_data": "/autopilot golden"},
+                        {"text": "🌐 24/7 All Hours", "callback_data": "/autopilot 24/7"},
+                    ],
+                    [
+                        {"text": "📈 Crypto Menu", "callback_data": "menu_crypto"},
+                    ],
+                ]
+                sub_l = subcmd.lower()
+                if command == "/autopilot_on" or sub_l == "on":
                     autopilot.resume()
+                    mode_desc = (
+                        "Golden Hours Only (8AM–1PM & 4PM–6PM WAT)"
+                        if autopilot.schedule_mode == "golden_wat"
+                        else "24/7 All Hours"
+                    )
                     send_telegram_message(
                         f"🟢 <b>Auto-Pilot Live Calls Activated!</b>\n\n"
-                        f"Hunting 24/7 across <b>Crypto &amp; Memecoins</b> ({autopilot.min_confidence}%+ minimum confidence). "
+                        f"• <b>Scan Window:</b> <code>{mode_desc}</code>\n"
+                        f"• <b>Markets:</b> <b>Crypto &amp; Memecoins</b> ({autopilot.min_confidence}%+ minimum confidence)\n"
                         f"Whenever an A+ setup triggers, Admin + active Crypto/Bundle VIPs receive a live call with a 1-tap Enter button.",
                         chat_id=chat_id,
-                        reply_markup={"inline_keyboard": [
-                            [{"text": "🔴 Pause Auto-Pilot", "callback_data": "/autopilot off"}],
-                            [{"text": "📈 Crypto Menu", "callback_data": "menu_crypto"}],
-                        ]},
+                        reply_markup={"inline_keyboard": ap_kb},
                     )
                     return
-                elif command == "/autopilot_off" or subcmd.lower() == "off":
+                elif command == "/autopilot_off" or sub_l == "off":
                     autopilot.stop()
                     send_telegram_message(
                         "🔴 <b>Auto-Pilot Paused.</b>\n\nBackground scanning is suspended. Send <code>/autopilot on</code> to resume.",
                         chat_id=chat_id,
-                        reply_markup={"inline_keyboard": [
-                            [{"text": "🟢 Activate Auto-Pilot", "callback_data": "/autopilot on"}],
-                            [{"text": "📈 Crypto Menu", "callback_data": "menu_crypto"}],
-                        ]},
+                        reply_markup={"inline_keyboard": ap_kb},
                     )
                     return
+                elif sub_l in ("golden", "golden_wat", "wat", "hours", "best", "24/7", "all", "247"):
+                    new_mode = autopilot.set_schedule_mode(sub_l)
+                    if new_mode == "golden_wat":
+                        mode_msg = (
+                            "🌟 <b>Auto-Pilot Set to Golden Hours Only!</b>\n\n"
+                            "New live calls will only ring during:\n"
+                            "• <b>Morning:</b> <code>8:00 AM – 1:00 PM WAT</code>\n"
+                            "• <b>Afternoon:</b> <code>4:00 PM – 6:00 PM WAT</code>\n\n"
+                            "<i>Open trades and targets are still watched 24/7!</i>"
+                        )
+                    else:
+                        mode_msg = (
+                            "🌐 <b>Auto-Pilot Set to 24/7 All Hours!</b>\n\n"
+                            "The scanner will hunt around the clock and send every <code>≥75%</code> setup day or night."
+                        )
+                    send_telegram_message(mode_msg, chat_id=chat_id, reply_markup={"inline_keyboard": ap_kb})
+                    return
                 else:
-                    ap_keyboard = [
-                        [
-                            {"text": "🟢 Turn ON", "callback_data": "/autopilot on"},
-                            {"text": "🔴 Turn OFF", "callback_data": "/autopilot off"},
-                        ],
-                        [
-                            {"text": "📈 Crypto Menu", "callback_data": "menu_crypto"},
-                        ],
-                    ]
-                    send_telegram_message(autopilot.get_status_text(), chat_id=chat_id, reply_markup={"inline_keyboard": ap_keyboard})
+                    send_telegram_message(autopilot.get_status_text(), chat_id=chat_id, reply_markup={"inline_keyboard": ap_kb})
                     return
 
             if command in {"/status", "/trades", "/paper", "/wallet"}:
@@ -1322,31 +1421,22 @@ def handle_message(message: dict) -> None:
                         force_kb = {
                             "inline_keyboard": [
                                 [
-                                    {"text": f"🟢 Force BUY {disp}", "callback_data": f"paper_enter:{target_sym}:BUY"},
-                                    {"text": f"🔴 Force SELL {disp}", "callback_data": f"paper_enter:{target_sym}:SELL"},
+                                    {"text": f"🟢 Force BUY {disp}", "callback_data": f"paper_force:{target_sym}:BUY"},
+                                    {"text": f"🔴 Force SELL {disp}", "callback_data": f"paper_force:{target_sym}:SELL"},
                                 ],
                                 [{"text": "📈 Crypto Menu", "callback_data": "menu_crypto"}],
                             ]
                         }
                         send_telegram_message(wait_msg, chat_id=chat_id, reply_markup=force_kb)
                         return
-                    trade_conf = report.confidence if report.action == action else None
-                    if report.action != action or not report.stop_loss or not (report.tp1 or report.take_profit):
-                        report = compute_trade_levels(target_sym, action, candles)
-                        if trade_conf is None:
-                            trade_conf = report.confidence
-                    curr_close = float(candles.iloc[-1]["close"])
-                    entry = report.entry or curr_close
-                    sl = report.stop_loss or (entry * 0.985 if action == "BUY" else entry * 1.015)
-                    risk_dist = abs(entry - sl)
-                    tp1 = report.tp1 or report.take_profit or (entry + risk_dist if action == "BUY" else entry - risk_dist)
-                    order_type = getattr(report, "order_type", "MARKET")
-                    ok, enter_msg, _ = open_paper_trade(
-                        target_sym, action, entry, sl, tp1, user_id=chat_id,
-                        order_type=order_type, current_price=curr_close,
-                        confidence=trade_conf,
+                    _open_crypto_trade_from_signal(
+                        chat_id,
+                        target_sym,
+                        action,
+                        enforce_fresh_guard=False,
+                        candles=candles,
+                        report=report,
                     )
-                    send_telegram_message(enter_msg, chat_id=chat_id)
                 except Exception as e:
                     send_telegram_message(f"❌ Failed to enter paper trade for {target_sym}: {e}", chat_id=chat_id)
                 return
@@ -1386,6 +1476,14 @@ def handle_message(message: dict) -> None:
                     buttons = []
                     for stp in setups:
                         disp = DISPLAY_NAMES.get(stp.symbol, stp.symbol.replace("_", "/"))
+                        record_signal_snapshot(
+                            stp.symbol,
+                            stp.action,
+                            stp.entry,
+                            stp.tp1 or stp.take_profit,
+                            stp.stop_loss,
+                            stp.confidence,
+                        )
                         btn_text = f"🚀 Enter {disp} ({stp.action})"
                         buttons.append([{"text": btn_text, "callback_data": f"paper_enter:{stp.symbol}:{stp.action}:{stp.confidence}"}])
                     reply_markup = {"inline_keyboard": buttons}

@@ -382,3 +382,25 @@ class TestSafetyAndRecipients:
         assert len(df_elon) == 15
         assert mock_dex.called
 
+    def test_access_control_cloud_wipe_protection(self, monkeypatch):
+        import bot.access_control as ac
+        import requests
+
+        orig_failed, orig_has = ac._AC_CLOUD_LOAD_FAILED, ac._AC_HAS_CLOUD_STATE
+        monkeypatch.setenv("UPSTASH_REDIS_REST_URL", "https://fake.upstash.io")
+        monkeypatch.setenv("UPSTASH_REDIS_REST_TOKEN", "tok")
+        try:
+            ac._AC_CLOUD_LOAD_FAILED = False
+            ac._AC_HAS_CLOUD_STATE = False
+            with patch("bot.access_control.requests.get", side_effect=requests.exceptions.Timeout("down")), \
+                 patch("bot.access_control.requests.post") as mock_post:
+                assert _load_from_cloud() is None
+                assert ac._AC_CLOUD_LOAD_FAILED is True
+                with monkeypatch.context() as mp:
+                    mp.delenv("PYTEST_CURRENT_TEST", raising=False)
+                    ac._save_store()
+                mock_post.assert_not_called()
+        finally:
+            ac._AC_CLOUD_LOAD_FAILED = orig_failed
+            ac._AC_HAS_CLOUD_STATE = orig_has
+

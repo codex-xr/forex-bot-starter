@@ -301,9 +301,12 @@ class PaperStore:
 
 
 _MEMORY_STORE = PaperStore()
+_CLOUD_LOAD_FAILED = False
+_HAS_CLOUD_STATE = False
 
 
 def _load_from_cloud() -> PaperStore | None:
+    global _CLOUD_LOAD_FAILED, _HAS_CLOUD_STATE
     if os.getenv("PYTEST_CURRENT_TEST") and not hasattr(requests.get, "mock_calls"):
         return None
     url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
@@ -319,18 +322,22 @@ def _load_from_cloud() -> PaperStore | None:
                 timeout=5,
             )
             if resp.status_code == 200:
+                _CLOUD_LOAD_FAILED = False
                 val = resp.json().get("result")
                 if val:
                     data = json.loads(val)
+                    _HAS_CLOUD_STATE = True
                     return PaperStore.from_dict(data)
                 return None
         except Exception as exc:
             if attempt == 1:
                 print(f"[PaperCloud] Error loading from Upstash Redis: {exc}")
+    _CLOUD_LOAD_FAILED = True
     return None
 
 
 def _save_to_cloud(store: PaperStore) -> bool:
+    global _CLOUD_LOAD_FAILED, _HAS_CLOUD_STATE
     if os.getenv("PYTEST_CURRENT_TEST") and not hasattr(requests.post, "mock_calls"):
         return False
     url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
@@ -348,6 +355,8 @@ def _save_to_cloud(store: PaperStore) -> bool:
                 timeout=5,
             )
             if resp.status_code == 200:
+                _CLOUD_LOAD_FAILED = False
+                _HAS_CLOUD_STATE = True
                 return True
         except Exception as exc:
             if attempt == 1:
@@ -381,8 +390,11 @@ def _save_paper_store(store: PaperStore) -> None:
     global _MEMORY_STORE
     _MEMORY_STORE = store
 
-    # 1. Save to cloud
-    _save_to_cloud(store)
+    # 1. Save to cloud (skip overwrite if cloud was configured, failed initial load, and no state loaded yet)
+    if _CLOUD_LOAD_FAILED and not _HAS_CLOUD_STATE:
+        print("[PaperCloud] Skipping cloud save because initial cloud load failed (protecting cloud state).")
+    else:
+        _save_to_cloud(store)
 
     # 2. Save locally
     try:
@@ -491,7 +503,7 @@ def reset_paper_account(starting_balance: float = 10000.0, user_id: str | int | 
         f"• <b>Active Positions:</b> Cleared (<b>{pos_count}</b> removed)\n"
         f"• <b>Trade History:</b> Wiped (<b>{hist_count}</b> records removed)\n"
         f"• <b>PnL:</b> Reset to <b>$0.00</b>\n\n"
-        f"<i>Ready for fresh forward testing! Use <code>/menu</code> or scans (<code>/c1</code>, <code>/m1</code>, <code>/f1</code>) to start.</i>"
+        f"<i>Ready for fresh forward testing! Use <code>/menu</code> or scans (<code>/c1</code>, <code>/c2</code>, <code>/m1</code>, <code>/m2</code>) to start.</i>"
     )
 
 
@@ -1034,7 +1046,7 @@ def get_status_report(user_id: str | int | None = None) -> tuple[str, dict | Non
 
     if open_count == 0:
         lines.append("<i>No active paper trades currently running.</i>")
-        lines.append("<i>Run <code>/c1</code>, <code>/c2</code>, <code>/m1</code>, <code>/m2</code> or <code>/f1</code> to scan and enter setups!</i>")
+        lines.append("<i>Run <code>/c1</code>, <code>/c2</code>, <code>/m1</code>, or <code>/m2</code> to scan and enter setups!</i>")
     else:
         total_unrealized_usd = 0.0
 
@@ -1303,7 +1315,7 @@ def get_trade_history_report(limit: int = 10, user_id: str | int | None = None) 
         conf_str = f" | Conf: <code>{h_conf}%</code>" if h_conf is not None else ""
         lines.append(
             f"{pnl_icon} <b>{h.display_symbol}</b> ({h.action}) — {h.exit_reason}{conf_str}\n"
-            f"   • Entry: <code>{_fmt_price(h.entry_price)}</code> $\\rightarrow$ Exit: <code>{_fmt_price(h.exit_price)}</code>\n"
+            f"   • Entry: <code>{_fmt_price(h.entry_price)}</code> → Exit: <code>{_fmt_price(h.exit_price)}</code>\n"
             f"   • PnL: <b>{pnl_sign}${h.pnl_usd:,.2f}</b> ({pnl_sign}{h.pnl_pct:.2f}%)\n"
             f"   • Date: <code>{h.exit_time}</code>"
         )

@@ -770,7 +770,11 @@ class TestPendingLimitOrders:
             sum_closed = get_daily_summary_report(user_id=user)
             assert "Closed Trades Today" in sum_closed
             assert "Conf: <code>86%</code>" in sum_closed
-            assert "86%" in get_trade_history_report(user_id=user)
+            hist_report = get_trade_history_report(user_id=user)
+            assert "86%" in hist_report
+            assert "→" in hist_report
+            assert "$\\rightarrow$" not in hist_report
+            assert "/f1" not in get_status_report(user_id=user)[0]
 
         # Callback button embeds original confidence even if setup shifted
         mock_df = pd.DataFrame([{"open": 25.0, "high": 26.0, "low": 24.0, "close": 25.5}] * 100)
@@ -785,6 +789,76 @@ class TestPendingLimitOrders:
                 "data": "paper_enter:AVAX_USD:BUY:84",
             })
         assert "84%</code>" in mock_send.call_args[0][0]
+
+    def test_late_entry_anti_chase_guard_and_force_bypass(self):
+        from bot.autopilot import _SIGNAL_SNAPSHOTS, record_signal_snapshot
+        from bot.telegram_commands import handle_callback_query
+
+        _SIGNAL_SNAPSHOTS.clear()
+        record_signal_snapshot("LINK_USD", "BUY", entry=10.0, tp1=10.2, sl=9.8, confidence=86)
+        chased_df = pd.DataFrame([{"open": 10.12, "high": 10.15, "low": 10.10, "close": 10.12}] * 100)
+        try:
+            with patch("bot.telegram_commands.fetch_live_candles", return_value=chased_df), \
+                 patch("bot.telegram_commands.send_telegram_message") as mock_send, \
+                 patch("bot.telegram_commands.telegram_request"), \
+                 patch("bot.telegram_commands.is_user_authorized", return_value=(True, "active")):
+                handle_callback_query({
+                    "id": "cb_late",
+                    "from": {"id": 777444},
+                    "message": {"chat": {"id": 777444}},
+                    "data": "paper_enter:LINK_USD:BUY:86",
+                })
+            warn_text = mock_send.call_args[0][0]
+            warn_kb = mock_send.call_args[1]["reply_markup"]["inline_keyboard"]
+            assert "Late Entry Warning" in warn_text
+            assert warn_kb[0][0]["callback_data"] == "paper_force:LINK_USD:BUY:86"
+
+            # Explicit Force bypasses warning and enters
+            mock_send.reset_mock()
+            with patch("bot.telegram_commands.fetch_live_candles", return_value=chased_df), \
+                 patch("bot.telegram_commands.send_telegram_message") as mock_send2, \
+                 patch("bot.telegram_commands.telegram_request"), \
+                 patch("bot.telegram_commands.is_user_authorized", return_value=(True, "active")):
+                handle_callback_query({
+                    "id": "cb_force",
+                    "from": {"id": 777444},
+                    "message": {"chat": {"id": 777444}},
+                    "data": "paper_force:LINK_USD:BUY:86",
+                })
+            assert "Paper Trade Entered" in mock_send2.call_args[0][0]
+        finally:
+            _SIGNAL_SNAPSHOTS.clear()
+
+    def test_cloud_wipe_protection_when_initial_cloud_load_fails(self, monkeypatch):
+        import bot.paper_engine as pe
+        import requests
+
+        orig_failed, orig_has = pe._CLOUD_LOAD_FAILED, pe._HAS_CLOUD_STATE
+        monkeypatch.setenv("UPSTASH_REDIS_REST_URL", "https://fake.upstash.io")
+        monkeypatch.setenv("UPSTASH_REDIS_REST_TOKEN", "tok")
+        try:
+            pe._CLOUD_LOAD_FAILED = False
+            pe._HAS_CLOUD_STATE = False
+            with patch("bot.paper_engine.requests.get", side_effect=requests.exceptions.Timeout("down")), \
+                 patch("bot.paper_engine.requests.post") as mock_post:
+                assert pe._load_from_cloud() is None
+                assert pe._CLOUD_LOAD_FAILED is True
+                pe._save_paper_store(pe.PaperStore())
+                mock_post.assert_not_called()
+        finally:
+            pe._CLOUD_LOAD_FAILED = orig_failed
+            pe._HAS_CLOUD_STATE = orig_has
+
+    def test_time_command_includes_wat_golden_windows(self):
+        from bot.access_control import ADMIN_CHAT_ID
+        from bot.telegram_commands import handle_message
+
+        with patch("bot.telegram_commands.send_telegram_message") as mock_send:
+            handle_message({"chat": {"id": ADMIN_CHAT_ID}, "from": {"id": ADMIN_CHAT_ID}, "text": "/time"})
+        txt = mock_send.call_args[0][0]
+        assert "WAT" in txt
+        assert "08:01" in txt
+        assert "16:01" in txt
 
 
 

@@ -32,6 +32,8 @@ _STORE: dict = {
 
 _LOADED = False
 _LAST_SYNC_TS = 0.0
+_AC_CLOUD_LOAD_FAILED = False
+_AC_HAS_CLOUD_STATE = False
 
 
 def _get_store_path() -> Path:
@@ -50,6 +52,7 @@ def _get_store_path() -> Path:
 
 
 def _load_from_cloud() -> dict | None:
+    global _AC_CLOUD_LOAD_FAILED, _AC_HAS_CLOUD_STATE
     url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
     token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
     if not url or not token:
@@ -58,19 +61,23 @@ def _load_from_cloud() -> dict | None:
         headers = {"Authorization": f"Bearer {token}"}
         res = requests.get(f"{url}/get/access_store_data", headers=headers, timeout=2)
         if res.status_code == 200:
+            _AC_CLOUD_LOAD_FAILED = False
             val = res.json().get("result")
             if val:
+                _AC_HAS_CLOUD_STATE = True
                 if isinstance(val, str):
                     return json.loads(val)
                 elif isinstance(val, dict):
                     return val
-        return None
+            return None
     except Exception as exc:
         print(f"[AccessControl] Upstash load error: {exc}")
-        return None
+    _AC_CLOUD_LOAD_FAILED = True
+    return None
 
 
 def _save_to_cloud(data: dict) -> bool:
+    global _AC_CLOUD_LOAD_FAILED, _AC_HAS_CLOUD_STATE
     url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
     token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
     if not url or not token:
@@ -83,7 +90,11 @@ def _save_to_cloud(data: dict) -> bool:
             json=["SET", "access_store_data", json.dumps(data)],
             timeout=2,
         )
-        return res.status_code == 200
+        if res.status_code == 200:
+            _AC_CLOUD_LOAD_FAILED = False
+            _AC_HAS_CLOUD_STATE = True
+            return True
+        return False
     except Exception as exc:
         print(f"[AccessControl] Upstash save error: {exc}")
         return False
@@ -143,8 +154,11 @@ def _save_store() -> None:
     except Exception as exc:
         print(f"[AccessControl] Error saving store: {exc}")
 
-    # 2. Save to cloud
-    _save_to_cloud(_STORE)
+    # 2. Save to cloud (skip overwrite if initial cloud load failed and no state loaded)
+    if _AC_CLOUD_LOAD_FAILED and not _AC_HAS_CLOUD_STATE:
+        print("[AccessControl] Skipping cloud save because initial cloud load failed (protecting cloud state).")
+    else:
+        _save_to_cloud(_STORE)
 
 
 try:

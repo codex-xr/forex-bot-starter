@@ -100,3 +100,47 @@ class TestAutoPilot(unittest.TestCase):
         self.assertEqual(res_trades["symbols_scanned"], 0)
         self.assertEqual(res_trades["alerts_triggered"], [])
         mock_ap.run_cycle.assert_not_called()
+
+    def test_golden_hours_window_wat_logic(self):
+        from datetime import datetime, timezone
+        ap = AutoPilot(min_confidence=75, schedule_mode="golden_wat")
+        # 07:30 UTC = 08:30 WAT (Golden Morning)
+        self.assertTrue(ap.is_within_scan_window(datetime(2026, 11, 23, 7, 30, tzinfo=timezone.utc)))
+        # 13:30 UTC = 14:30 WAT (US Open chop -> outside)
+        self.assertFalse(ap.is_within_scan_window(datetime(2026, 11, 23, 13, 30, tzinfo=timezone.utc)))
+        # 15:30 UTC = 16:30 WAT (Afternoon Sweet Spot)
+        self.assertTrue(ap.is_within_scan_window(datetime(2026, 11, 23, 15, 30, tzinfo=timezone.utc)))
+        # 19:00 UTC = 20:00 WAT (Evening chop -> outside)
+        self.assertFalse(ap.is_within_scan_window(datetime(2026, 11, 23, 19, 0, tzinfo=timezone.utc)))
+
+        ap.set_schedule_mode("24/7")
+        self.assertTrue(ap.is_within_scan_window(datetime(2026, 11, 23, 19, 0, tzinfo=timezone.utc)))
+
+    @patch("bot.autopilot.send_telegram_message")
+    @patch("bot.autopilot.analyze_setup")
+    @patch("bot.autopilot.fetch_live_candles")
+    def test_cloud_alert_lock_prevents_duplicate_buzz(self, mock_fetch, mock_analyze, mock_send):
+        ap = AutoPilot(min_confidence=75)
+        mock_fetch.return_value = pd.DataFrame({"close": [100.0] * 100})
+        mock_analyze.return_value = SignalReport("SOLUSD", "BUY", 84, "Bullish", 100.0, 98.0, 102.0, "SMC Sweep")
+        with patch.object(ap, "_claim_cloud_alert_lock", return_value=False):
+            sent = ap.scan_single_symbol("SOL_USD")
+        self.assertFalse(sent)
+        mock_send.assert_not_called()
+
+    @patch("bot.telegram_commands.send_telegram_message")
+    def test_autopilot_golden_and_247_commands(self, mock_send):
+        from bot.access_control import ADMIN_CHAT_ID
+        from bot.telegram_commands import handle_message
+
+        orig_mode = autopilot.schedule_mode
+        try:
+            handle_message({"chat": {"id": ADMIN_CHAT_ID}, "from": {"id": ADMIN_CHAT_ID}, "text": "/autopilot golden"})
+            self.assertEqual(autopilot.schedule_mode, "golden_wat")
+            self.assertIn("Golden Hours Only", mock_send.call_args[0][0])
+
+            handle_message({"chat": {"id": ADMIN_CHAT_ID}, "from": {"id": ADMIN_CHAT_ID}, "text": "/autopilot 24/7"})
+            self.assertEqual(autopilot.schedule_mode, "24/7")
+            self.assertIn("24/7 All Hours", mock_send.call_args[0][0])
+        finally:
+            autopilot.schedule_mode = orig_mode
