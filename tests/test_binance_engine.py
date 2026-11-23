@@ -165,3 +165,20 @@ class TestEndToEndCryptoSignalWithBinance:
 
         msg = report.to_message()
         assert "Binance Smart Money" in msg
+
+    def test_klines_timeout_backs_off_binance_mirrors(self, monkeypatch):
+        import requests
+        import bot.binance_engine as be
+
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        be._HOST_BACKOFF_UNTIL.clear()
+        try:
+            with patch("bot.binance_engine._SESSION.get", side_effect=requests.exceptions.Timeout("slow")) as mock_get:
+                with pytest.raises(RuntimeError):
+                    fetch_binance_klines("BTC_USD", interval="15m", limit=15)
+            # Backs off Spot + Futures immediately after binance.vision times out instead of hanging on 5 mirrors
+            assert mock_get.call_count == 1
+            assert be._is_host_backed_off("https://api.binance.com")
+            assert be._is_host_backed_off(be.BINANCE_FUTURES_HOST)
+        finally:
+            be._HOST_BACKOFF_UNTIL.clear()

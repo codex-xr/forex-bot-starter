@@ -195,8 +195,14 @@ class AutoPilot:
         if not self.is_active:
             return []
 
+        try:
+            from bot.news_engine import fetch_latest_news
+            fetch_latest_news(limit=25)
+        except Exception:
+            pass
+
         triggered: list[str] = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
             future_to_sym = {
                 executor.submit(self.scan_single_symbol, symbol): symbol
                 for symbol in ALL_WATCHLIST
@@ -277,6 +283,48 @@ class AutoPilot:
 
 # Global singleton instance (75%+ Crypto & Memecoin live calls -> Admin + Crypto VIPs)
 autopilot = AutoPilot(min_confidence=75, broadcast_to_vips=True)
+
+
+def run_cron_cycle(run_autopilot: bool = True) -> dict:
+    """Checks open paper trades, runs due broadcasts, and optionally runs an AutoPilot scan cycle."""
+    paper_trade_alerts = []
+    poly_trade_alerts = []
+    executed_broadcasts = []
+    alerts = []
+
+    try:
+        from bot.paper_engine import check_open_trades
+        paper_trade_alerts = check_open_trades()
+    except Exception as exc:
+        print(f"[Cron PaperTrade] Error: {exc}")
+
+    try:
+        from bot.poly_paper_engine import check_open_poly_trades
+        poly_trade_alerts = check_open_poly_trades()
+    except Exception as exc:
+        print(f"[Cron PolyTrade] Error: {exc}")
+
+    try:
+        from bot.access_control import process_due_broadcasts
+        executed_broadcasts = process_due_broadcasts()
+    except Exception as exc:
+        print(f"[Cron Broadcast] Error: {exc}")
+
+    if run_autopilot and autopilot:
+        try:
+            alerts = autopilot.run_cycle()
+        except Exception as exc:
+            print(f"[Cron Scan] AutoPilot cycle error: {exc}")
+
+    return {
+        "ok": True,
+        "status": "success",
+        "symbols_scanned": len(ALL_WATCHLIST) if run_autopilot else 0,
+        "alerts_triggered": alerts,
+        "paper_trade_alerts": len(paper_trade_alerts),
+        "poly_trade_alerts": len(poly_trade_alerts),
+        "broadcasts_executed": executed_broadcasts,
+    }
 
 
 def main() -> None:

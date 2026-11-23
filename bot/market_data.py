@@ -96,7 +96,7 @@ def fetch_gate_candles(gate_pair: str, interval: str = "15min", limit: int = 250
                 url,
                 params={"currency_pair": gate_pair, "interval": g_interval, "limit": min(limit, 1000)},
                 headers={"Accept": "application/json"},
-                timeout=6.0,
+                timeout=5.0,
             )
             if response.ok:
                 break

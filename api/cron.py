@@ -1,52 +1,25 @@
 import json
+import sys
 from http.server import BaseHTTPRequestHandler
-from bot.autopilot import autopilot
-from bot.session_bot import ALL_WATCHLIST
-from bot.access_control import process_due_broadcasts
-from bot.paper_engine import check_open_trades
+from pathlib import Path
+
+ROOT_DIR = str(Path(__file__).resolve().parent.parent)
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+from bot.autopilot import run_cron_cycle
 
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         """Triggered by Cron / 24/7 Trade Watcher to check open paper trades, process broadcasts, and run AutoPilot."""
-        # 1. Check open paper trades FIRST (trigger TP1/SL closures and deliver to owning users)
-        paper_trade_alerts = []
-        poly_trade_alerts = []
-        try:
-            paper_trade_alerts = check_open_trades()
-        except Exception as exc:
-            print(f"[Cron PaperTrade] Error: {exc}")
-        try:
-            from bot.poly_paper_engine import check_open_poly_trades
-            poly_trade_alerts = check_open_poly_trades()
-        except Exception as exc:
-            print(f"[Cron PolyTrade] Error: {exc}")
-
-        # 2. Process due scheduled broadcasts
-        executed_broadcasts = []
-        try:
-            executed_broadcasts = process_due_broadcasts()
-        except Exception as exc:
-            print(f"[Cron Broadcast] Error: {exc}")
-
-        # 3. Run autopilot symbol scans in parallel unless mode=trades is specified
-        alerts = []
-        if "mode=trades" not in self.path and autopilot:
-            try:
-                alerts = autopilot.run_cycle()
-            except Exception as exc:
-                print(f"[Cron Scan] AutoPilot cycle error: {exc}")
-
+        res = run_cron_cycle(run_autopilot=("mode=trades" not in self.path))
         self.send_response(200)
         self.send_header("Content-type", "application/json")
         self.end_headers()
-        res = {
-            "status": "success",
-            "symbols_scanned": 0 if "mode=trades" in self.path else len(ALL_WATCHLIST),
-            "alerts_triggered": alerts,
-            "paper_trade_alerts": len(paper_trade_alerts),
-            "poly_trade_alerts": len(poly_trade_alerts),
-            "broadcasts_executed": executed_broadcasts,
-        }
         self.wfile.write(json.dumps(res, indent=2).encode("utf-8"))
+
+    def do_POST(self):
+        """Supports POST cron triggers from GitHub Actions and external schedulers."""
+        self.do_GET()
 

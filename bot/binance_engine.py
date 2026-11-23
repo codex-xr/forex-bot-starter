@@ -43,6 +43,16 @@ def _backoff_host(host: str, seconds: float = 180.0) -> None:
     _HOST_BACKOFF_UNTIL[host] = time.time() + seconds
 
 
+def _backoff_binance_group(host: str, seconds: float = 180.0) -> None:
+    _backoff_host(host, seconds)
+    if "binance.vision" in host:
+        for b_host in ("https://api.binance.com", "https://api1.binance.com", "https://api2.binance.com", BINANCE_FUTURES_HOST):
+            _backoff_host(b_host, seconds)
+    elif "binance.com" in host:
+        for b_host in ("https://api.binance.com", "https://api1.binance.com", "https://api2.binance.com"):
+            _backoff_host(b_host, seconds)
+
+
 @dataclass(frozen=True)
 class BinanceSmartMoneyMetrics:
     symbol: str
@@ -117,7 +127,7 @@ def fetch_binance_klines(
             res = _SESSION.get(
                 url,
                 params={"symbol": target_sym, "interval": interval, "limit": limit},
-                timeout=min(timeout, 2.5),
+                timeout=min(timeout, 1.8),
             )
             if res.status_code == 200:
                 raw_data = res.json()
@@ -141,20 +151,13 @@ def fetch_binance_klines(
                     return df.dropna().sort_values("time").reset_index(drop=True)
             elif res.status_code == 400:
                 break
-            elif res.status_code == 451 and "binance.com" in host:
-                for b_host in ("https://api.binance.com", "https://api1.binance.com", "https://api2.binance.com"):
-                    _backoff_host(b_host, 300.0)
-                break
-        except requests.exceptions.ConnectionError:
-            _backoff_host(host, 180.0)
-            if "binance.vision" in host:
-                # If Binance's public CDN isn't reachable/resolvable, don't stall on extra mirrors
-                for b_host in ("https://api.binance.com", "https://api1.binance.com", "https://api2.binance.com", BINANCE_FUTURES_HOST):
-                    _backoff_host(b_host, 180.0)
-                break
-            if "binance.com" in host:
-                for b_host in ("https://api.binance.com", "https://api1.binance.com", "https://api2.binance.com"):
-                    _backoff_host(b_host, 180.0)
+            elif res.status_code == 451:
+                _backoff_binance_group(host, 300.0)
+                if "binance.com" in host:
+                    break
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            _backoff_binance_group(host, 180.0)
+            if "binance.vision" in host or "binance.com" in host:
                 break
         except Exception:
             continue
@@ -166,7 +169,7 @@ def fetch_binance_klines(
             res = _SESSION.get(
                 url,
                 params={"symbol": fut_sym, "interval": interval, "limit": limit},
-                timeout=min(timeout, 2.0),
+                timeout=min(timeout, 1.5),
             )
             if res.status_code == 200:
                 raw_data = res.json()
@@ -190,7 +193,7 @@ def fetch_binance_klines(
                     return df.dropna().sort_values("time").reset_index(drop=True)
             elif res.status_code == 451:
                 _backoff_host(BINANCE_FUTURES_HOST, 300.0)
-        except requests.exceptions.ConnectionError:
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
             _backoff_host(BINANCE_FUTURES_HOST, 180.0)
         except Exception:
             pass
@@ -224,7 +227,7 @@ def fetch_binance_derivatives(symbol: str, timeout: float = 1.5) -> dict:
         elif res_oi.status_code == 451:
             _backoff_host(BINANCE_FUTURES_HOST, 300.0)
             return {}
-    except requests.exceptions.ConnectionError:
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
         _backoff_host(BINANCE_FUTURES_HOST, 180.0)
         return {}
     except Exception:
@@ -240,7 +243,7 @@ def fetch_binance_derivatives(symbol: str, timeout: float = 1.5) -> dict:
         elif res_fr.status_code == 451:
             _backoff_host(BINANCE_FUTURES_HOST, 300.0)
             return data
-    except requests.exceptions.ConnectionError:
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
         _backoff_host(BINANCE_FUTURES_HOST, 180.0)
         return data
     except Exception:
@@ -256,7 +259,7 @@ def fetch_binance_derivatives(symbol: str, timeout: float = 1.5) -> dict:
             data["top_trader_ls_ratio"] = float(item.get("longShortRatio", 1.0))
         elif res_ls.status_code == 451:
             _backoff_host(BINANCE_FUTURES_HOST, 300.0)
-    except requests.exceptions.ConnectionError:
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
         _backoff_host(BINANCE_FUTURES_HOST, 180.0)
     except Exception:
         pass

@@ -13,15 +13,13 @@ if ROOT_DIR not in sys.path:
 
 try:
     from bot.telegram_commands import handle_message, handle_callback_query
-    from bot.autopilot import autopilot
-    from bot.session_bot import ALL_WATCHLIST
+    from bot.autopilot import run_cron_cycle
     from bot.telegram import register_telegram_commands
 except Exception as import_err:
     print(f"[Vercel Startup Error]: {import_err}")
     handle_message = None
     handle_callback_query = None
-    autopilot = None
-    ALL_WATCHLIST = []
+    run_cron_cycle = None
     _IMPORT_ERROR = traceback.format_exc()
 else:
     _IMPORT_ERROR = None
@@ -35,19 +33,9 @@ class handler(BaseHTTPRequestHandler):
 
         try:
             update = json.loads(post_data.decode("utf-8"))
-            if update.get("action") == "check_trades":
-                from bot.paper_engine import check_open_trades
-                from bot.poly_paper_engine import check_open_poly_trades
-                from bot.access_control import process_due_broadcasts
-                alerts = check_open_trades()
-                poly_alerts = check_open_poly_trades()
-                bcasts = process_due_broadcasts()
-                resp_payload = {
-                    "ok": True,
-                    "paper_trade_alerts": len(alerts),
-                    "poly_trade_alerts": len(poly_alerts),
-                    "broadcasts_executed": bcasts,
-                }
+            action = update.get("action")
+            if action in ("check_trades", "run_cron", "run_autopilot", "cron") and run_cron_cycle:
+                resp_payload = run_cron_cycle(run_autopilot=(action != "check_trades"))
             elif "callback_query" in update:
                 cb = update["callback_query"]
                 qid = cb.get("id")
@@ -104,48 +92,19 @@ class handler(BaseHTTPRequestHandler):
             }, indent=2).encode("utf-8"))
             return
 
-        if path.endswith("/cron"):
-            # 1. Check open paper trades FIRST
-            paper_trade_alerts = []
-            poly_trade_alerts = []
-            try:
-                from bot.paper_engine import check_open_trades
-                paper_trade_alerts = check_open_trades()
-            except Exception as exc:
-                print(f"[Cron PaperTrade] Error: {exc}")
-            try:
-                from bot.poly_paper_engine import check_open_poly_trades
-                poly_trade_alerts = check_open_poly_trades()
-            except Exception as exc:
-                print(f"[Cron PolyTrade] Error: {exc}")
-
-            # 2. Process any due scheduled broadcasts
-            executed_broadcasts = []
-            try:
-                from bot.access_control import process_due_broadcasts
-                executed_broadcasts = process_due_broadcasts()
-            except Exception as exc:
-                print(f"[Cron Broadcast] Error: {exc}")
-
-            # 3. Run autopilot symbol scans unless mode=trades is specified
-            alerts = []
-            if "mode=trades" not in self.path and autopilot:
-                try:
-                    alerts = autopilot.run_cycle()
-                except Exception as exc:
-                    print(f"[Cron Scan] AutoPilot cycle error: {exc}")
-
+        orig_path = (
+            self.headers.get("x-vercel-original-path")
+            or self.headers.get("x-matched-path")
+            or self.headers.get("x-invoke-path")
+            or ""
+        ).split("?")[0].rstrip("/")
+        is_cron = path.endswith("/cron") or orig_path.endswith("/cron") or "cron=" in self.path
+        if is_cron and run_cron_cycle:
+            res = run_cron_cycle(run_autopilot=("mode=trades" not in self.path))
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({
-                "status": "success",
-                "symbols_scanned": 0 if "mode=trades" in self.path else len(ALL_WATCHLIST),
-                "alerts_triggered": alerts,
-                "paper_trade_alerts": len(paper_trade_alerts),
-                "poly_trade_alerts": len(poly_trade_alerts),
-                "broadcasts_executed": executed_broadcasts,
-            }, indent=2).encode("utf-8"))
+            self.wfile.write(json.dumps(res, indent=2).encode("utf-8"))
             return
 
         self.send_response(200)

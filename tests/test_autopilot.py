@@ -2,7 +2,8 @@ import unittest
 from unittest.mock import patch
 import pandas as pd
 
-from bot.autopilot import AutoPilot, autopilot
+from bot.autopilot import AutoPilot, autopilot, run_cron_cycle
+from bot.session_bot import ALL_WATCHLIST
 from bot.signal_engine import SignalReport
 
 
@@ -77,3 +78,25 @@ class TestAutoPilot(unittest.TestCase):
         sent_chat_ids = [c.kwargs["chat_id"] for c in mock_send.call_args_list]
         self.assertEqual(sent_chat_ids, [6686703329, 111222])
         self.assertEqual(mock_send.call_args_list[0].kwargs["reply_markup"]["inline_keyboard"][0][0]["callback_data"], "paper_enter:BTC_USD:BUY:82")
+
+    @patch("bot.autopilot.autopilot")
+    @patch("bot.access_control.process_due_broadcasts", return_value=["b1"])
+    @patch("bot.poly_paper_engine.check_open_poly_trades", return_value=["p1", "p2"])
+    @patch("bot.paper_engine.check_open_trades", return_value=["c1"])
+    def test_run_cron_cycle_runs_autopilot_and_trade_checks(self, mock_ct, mock_pt, mock_bc, mock_ap):
+        mock_ap.run_cycle.return_value = ["BTC_USD"]
+        res = run_cron_cycle(run_autopilot=True)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["status"], "success")
+        self.assertEqual(res["symbols_scanned"], len(ALL_WATCHLIST))
+        self.assertEqual(res["alerts_triggered"], ["BTC_USD"])
+        self.assertEqual(res["paper_trade_alerts"], 1)
+        self.assertEqual(res["poly_trade_alerts"], 2)
+        self.assertEqual(res["broadcasts_executed"], ["b1"])
+        mock_ap.run_cycle.assert_called_once()
+
+        mock_ap.reset_mock()
+        res_trades = run_cron_cycle(run_autopilot=False)
+        self.assertEqual(res_trades["symbols_scanned"], 0)
+        self.assertEqual(res_trades["alerts_triggered"], [])
+        mock_ap.run_cycle.assert_not_called()
