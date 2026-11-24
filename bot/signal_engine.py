@@ -1,3 +1,4 @@
+Warning: fs was declared with const; use let for reassignable variables.
 from dataclasses import dataclass
 import html
 import os
@@ -1085,13 +1086,20 @@ def _analyze_crypto_setup(
     Dedicated Crypto & Memecoin Trading Pipeline enhanced with
     Binance Smart Money Confluence (Taker Volume Delta, Open Interest, Funding Rate, Top Trader Whales).
     """
-    # 1. Query Binance Smart Money Metrics
+    # Historical backtests must not mix today's live derivatives/news context
+    # into old candles. Keep only features available from the candle window.
+    backtest_mode = os.getenv("BACKTEST_MODE", "").strip().lower() in ("1", "true", "yes")
+
+    # 1. Query Binance Smart Money Metrics only during live analysis. The
+    # derivative endpoints return current values, which would leak future data
+    # when this function is evaluated on historical windows.
     sm_metrics = None
-    try:
-        from bot.binance_engine import analyze_binance_smart_money
-        sm_metrics = analyze_binance_smart_money(symbol, data)
-    except Exception as sm_err:
-        print(f"[SignalEngine] Binance smart money error for {symbol}: {sm_err}")
+    if not backtest_mode:
+        try:
+            from bot.binance_engine import analyze_binance_smart_money
+            sm_metrics = analyze_binance_smart_money(symbol, data)
+        except Exception as sm_err:
+            print(f"[SignalEngine] Binance smart money error for {symbol}: {sm_err}")
 
     strategies = [
         _smc_sweep(data, bias, symbol),
@@ -1099,8 +1107,11 @@ def _analyze_crypto_setup(
         _crypto_momentum_surge(data, symbol),
         _vwap_orderflow_surge(data, symbol, bias),
         _volatility_squeeze_breakout(data, symbol, bias),
-        _news_catalyst_momentum(data, symbol, bias),
     ]
+    # News is live-only: replaying today's headlines against historical candles
+    # would introduce look-ahead bias into the backtest.
+    if not backtest_mode:
+        strategies.append(_news_catalyst_momentum(data, symbol, bias))
 
     report = _quality_gate(strategies, bias, data, symbol, min_confidence)
 
@@ -1151,23 +1162,24 @@ def _analyze_crypto_setup(
                 smart_money=sm_metrics.summary_text if sm_metrics else None,
             )
 
-        try:
-            from bot.news_engine import should_pause_for_news_whipsaw
-            news_paused, news_pause_reason = should_pause_for_news_whipsaw(symbol)
-            if news_paused:
-                return SignalReport(
-                    symbol=report.symbol,
-                    action="WAIT",
-                    confidence=42,
-                    trend=report.trend,
-                    entry=None,
-                    stop_loss=None,
-                    take_profit=None,
-                    reason=f"⛔ {news_pause_reason}",
-                    smart_money=sm_metrics.summary_text if sm_metrics else None,
-                )
-        except Exception:
-            pass
+        if not backtest_mode:
+            try:
+                from bot.news_engine import should_pause_for_news_whipsaw
+                news_paused, news_pause_reason = should_pause_for_news_whipsaw(symbol)
+                if news_paused:
+                    return SignalReport(
+                        symbol=report.symbol,
+                        action="WAIT",
+                        confidence=42,
+                        trend=report.trend,
+                        entry=None,
+                        stop_loss=None,
+                        take_profit=None,
+                        reason=f"⛔ {news_pause_reason}",
+                        smart_money=sm_metrics.summary_text if sm_metrics else None,
+                    )
+            except Exception:
+                pass
 
     # 3. Active Smart Money VETO: Protect capital if whales or funding directly contradict the signal
     if sm_metrics and report.action in ("BUY", "SELL"):
