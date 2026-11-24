@@ -1,4 +1,3 @@
-Warning: fs was declared with const; use let for reassignable variables.
 import os
 import time
 import pandas as pd
@@ -144,3 +143,4 @@ def run_crypto_profitability_check() -> None:
 
 if __name__ == "__main__":
     run_crypto_profitability_check()
+
