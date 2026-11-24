@@ -1,4 +1,3 @@
-Warning: fs was declared with const; use let for reassignable variables.
 import concurrent.futures
 import json
 import os
@@ -511,3 +510,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
