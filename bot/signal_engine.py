@@ -418,6 +418,134 @@ def _crypto_momentum_surge(data: pd.DataFrame, symbol: str) -> StrategySignal:
     return StrategySignal("Crypto Momentum Surge", "HOLD", 0, "")
 
 
+def _trend_pullback_reclaim(data: pd.DataFrame, symbol: str) -> StrategySignal:
+    """Find a 15-minute pullback/reclaim setup aligned with a completed 1-hour trend."""
+    name = "1H Trend Pullback Reclaim"
+    if symbol not in CRYPTO_SYMBOLS or "time" not in data.columns or len(data) < 80:
+        return StrategySignal(name, "HOLD", 0, "")
+
+    # The live feed includes the currently forming 15-minute candle. Exclude it
+    # so both the trigger candle and higher-timeframe trend use closed bars.
+    backtest_mode = os.getenv("BACKTEST_MODE", "").strip().lower() in ("1", "true", "yes")
+    trigger_data = data if backtest_mode else data.iloc[:-1]
+    if len(trigger_data) < 60:
+        return StrategySignal(name, "HOLD", 0, "")
+
+    timestamps = pd.to_datetime(trigger_data["time"], utc=True, errors="coerce")
+    source = trigger_data.assign(_time=timestamps).dropna(subset=["_time"])
+    if len(source) < 60:
+        return StrategySignal(name, "HOLD", 0, "")
+
+    source = source.sort_values("_time").set_index("_time")
+    aggregation = {
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+    }
+    if "volume" in source.columns:
+        aggregation["volume"] = "sum"
+    hourly = source.resample("1h", label="left", closed="left").agg(aggregation)
+    # Require all four 15-minute bars. This avoids treating a partial hour or
+    # an hour with missing candles as a completed higher-timeframe bar.
+    hourly_counts = source["close"].resample("1h", label="left", closed="left").count()
+    hourly = hourly.loc[hourly_counts >= 4].dropna(subset=["open", "high", "low", "close"])
+    if len(hourly) < 55:
+        return StrategySignal(name, "HOLD", 0, "")
+
+    latest_hour_end = hourly.index[-1] + pd.Timedelta(hours=1)
+    latest_input_end = source.index[-1] + pd.Timedelta(minutes=15)
+    if latest_input_end - latest_hour_end > pd.Timedelta(hours=2):
+        return StrategySignal(name, "HOLD", 0, "")
+
+    hourly = compute_indicators(hourly)
+    h_last = hourly.iloc[-1]
+    h_prev = hourly.iloc[-2]
+    h_close = float(h_last["close"])
+    h_ema20 = float(h_last["ema20"])
+    h_ema50 = float(h_last["ema50"])
+    h_prev_ema20 = float(h_prev["ema20"])
+    h_adx = float(h_last["adx"]) if pd.notna(h_last["adx"]) else 0.0
+    uptrend = h_close > h_ema20 > h_ema50 and h_ema20 > h_prev_ema20 and h_adx >= 18.0
+    downtrend = h_close < h_ema20 < h_ema50 and h_ema20 < h_prev_ema20 and h_adx >= 18.0
+    if not uptrend and not downtrend:
+        return StrategySignal(name, "HOLD", 0, "")
+
+    last = trigger_data.iloc[-1]
+    prev = trigger_data.iloc[-2]
+    prior = trigger_data.iloc[-3]
+    close = float(last["close"])
+    open_p = float(last["open"])
+    ema20 = float(last["ema20"])
+    vwap = float(last["vwap20"]) if pd.notna(last["vwap20"]) else ema20
+    prev_ema20 = float(prev["ema20"])
+    prev_vwap = float(prev["vwap20"]) if pd.notna(prev["vwap20"]) else prev_ema20
+    atr_val = float(last["atr"]) if pd.notna(last["atr"]) and float(last["atr"]) > 0 else 0.0
+    prev_atr = float(prev["atr"]) if pd.notna(prev["atr"]) and float(prev["atr"]) > 0 else atr_val
+    rsi_v = float(last["rsi"]) if pd.notna(last["rsi"]) else 50.0
+    rvol_v = float(last["rvol"]) if pd.notna(last["rvol"]) else 1.0
+    adx_v = float(last["adx"]) if pd.notna(last["adx"]) else 0.0
+    candle_range = float(last["high"] - last["low"])
+    if atr_val <= 0 or prev_atr <= 0 or candle_range > 2.5 * atr_val or adx_v < 14.0:
+        return StrategySignal(name, "HOLD", 0, "")
+
+    # A pullback should visit the EMA20/VWAP area without extending far beyond
+    # it, then the next closed candle must reclaim the area and break the
+    # pullback candle's extreme with above-average volume.
+    buy_zone = max(prev_ema20, prev_vwap)
+    buy_floor = min(prev_ema20, prev_vwap) - 0.35 * prev_atr
+    buy_pullback = (
+        float(prev["low"]) <= buy_zone + 0.10 * prev_atr
+        and float(prev["low"]) >= buy_floor
+        and float(prev["close"]) < float(prior["close"])
+    )
+    sell_zone = min(prev_ema20, prev_vwap)
+    sell_ceiling = max(prev_ema20, prev_vwap) + 0.35 * prev_atr
+    sell_pullback = (
+        float(prev["high"]) >= sell_zone - 0.10 * prev_atr
+        and float(prev["high"]) <= sell_ceiling
+        and float(prev["close"]) > float(prior["close"])
+    )
+
+    if (
+        uptrend
+        and buy_pullback
+        and close > max(ema20, vwap)
+        and close > float(prev["high"])
+        and close > open_p
+        and float(last["ema20"]) > float(last["ema50"])
+        and 50.0 <= rsi_v <= 67.0
+        and rvol_v >= 1.10
+        and abs(close - ema20) <= 1.0 * atr_val
+    ):
+        return StrategySignal(
+            name,
+            "BUY",
+            78,
+            f"Closed 1H uptrend; 15m EMA20/VWAP pullback reclaimed above {max(ema20, vwap):.4f} with {rvol_v:.1f}x volume",
+        )
+
+    if (
+        downtrend
+        and sell_pullback
+        and close < min(ema20, vwap)
+        and close < float(prev["low"])
+        and close < open_p
+        and float(last["ema20"]) < float(last["ema50"])
+        and 33.0 <= rsi_v <= 50.0
+        and rvol_v >= 1.10
+        and abs(close - ema20) <= 1.0 * atr_val
+    ):
+        return StrategySignal(
+            name,
+            "SELL",
+            78,
+            f"Closed 1H downtrend; 15m EMA20/VWAP pullback rejected below {min(ema20, vwap):.4f} with {rvol_v:.1f}x volume",
+        )
+
+    return StrategySignal(name, "HOLD", 0, "")
+
+
 def _news_catalyst_momentum(data: pd.DataFrame, symbol: str, bias: str = "neutral") -> StrategySignal:
     try:
         from bot.news_engine import get_asset_catalyst
@@ -1105,6 +1233,7 @@ def _analyze_crypto_setup(
         _smc_sweep(data, bias, symbol),
         _mean_reversion(data, symbol, bias),
         _crypto_momentum_surge(data, symbol),
+        _trend_pullback_reclaim(data, symbol),
         _vwap_orderflow_surge(data, symbol, bias),
         _volatility_squeeze_breakout(data, symbol, bias),
     ]
