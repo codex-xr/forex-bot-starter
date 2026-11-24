@@ -1,4 +1,3 @@
-Warning: fs was declared with const; use let for reassignable variables.
 from dataclasses import dataclass
 import html
 import os
@@ -1391,5 +1390,6 @@ def compute_trade_levels(symbol: str, action: str, prices: pd.DataFrame) -> Sign
     close = float(last["close"])
     atr_val = float(last["atr"]) if "atr" in last and pd.notna(last["atr"]) and float(last["atr"]) > 0 else close * 0.005
     return _make_report(symbol, clean_act, 75, "Directional", close, atr_val, "Direct execution", data=data)
+
 
 
