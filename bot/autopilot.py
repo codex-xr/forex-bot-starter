@@ -1,3 +1,4 @@
+Warning: fs was declared with const; use let for reassignable variables.
 import concurrent.futures
 import json
 import os
@@ -113,12 +114,17 @@ class AutoPilot:
         scan_delay_seconds: float = 45.0,
         broadcast_to_vips: bool = False,
         schedule_mode: str = "24/7",
+        max_alerts_per_cycle: int = 1,
     ) -> None:
         self.min_confidence = min_confidence
         self.cooldown_seconds = cooldown_seconds
         self.scan_delay_seconds = scan_delay_seconds
         self.broadcast_to_vips = broadcast_to_vips
         self.schedule_mode = _normalize_schedule_mode(schedule_mode)
+        # Crypto pairs are highly correlated.  A scan that finds several BUYs (or
+        # SELLs) is usually one market thesis, not several independent bets.
+        # Keep the broadcast basket deliberately small to avoid stacking risk.
+        self.max_alerts_per_cycle = max(1, int(max_alerts_per_cycle))
         self.is_active = True
         self.last_alerts: dict[str, float] = {}
         self.alert_history: list[dict] = []
@@ -251,20 +257,25 @@ class AutoPilot:
                 self.alert_history.pop(0)
         self._save_to_cloud()
 
-    def scan_single_symbol(self, symbol: str) -> bool:
-        """Scans a single symbol and sends a live call if a valid setup is detected. Returns True if sent."""
+    def _evaluate_symbol(self, symbol: str):
+        """Return a qualifying signal without sending it, or ``None`` when no setup qualifies."""
         self._sync_from_cloud()
         if not self.is_active or not self.is_within_scan_window():
-            return False
+            return None
 
         try:
             prices = fetch_live_candles(symbol)
         except Exception:
-            return False
+            return None
 
         report = analyze_setup(symbol, prices, min_confidence=self.min_confidence)
+        if report.action not in ("BUY", "SELL"):
+            return None
 
-        # Ignore WAIT states completely
+        return report
+
+    def _send_signal_alert(self, symbol: str, report) -> bool:
+        """Send one already-qualified signal after duplicate/cooldown checks."""
         if report.action not in ("BUY", "SELL"):
             return False
 
@@ -315,6 +326,13 @@ class AutoPilot:
         print(f"[AutoPilot] Live call sent for {symbol} ({report.action} at {report.confidence}% confidence)")
         return True
 
+    def scan_single_symbol(self, symbol: str) -> bool:
+        """Scans a single symbol and sends a live call if a valid setup is detected. Returns True if sent."""
+        report = self._evaluate_symbol(symbol)
+        if report is None:
+            return False
+        return self._send_signal_alert(symbol, report)
+
     def run_cycle(self) -> list[str]:
         """Runs one fast concurrent sweep across all monitored crypto & memecoin symbols."""
         self._sync_from_cloud(force=True)
@@ -327,19 +345,31 @@ class AutoPilot:
         except Exception:
             pass
 
-        triggered: list[str] = []
+        candidates: list[tuple[str, object]] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
             future_to_sym = {
-                executor.submit(self.scan_single_symbol, symbol): symbol
+                executor.submit(self._evaluate_symbol, symbol): symbol
                 for symbol in ALL_WATCHLIST
             }
             for future in concurrent.futures.as_completed(future_to_sym):
                 symbol = future_to_sym[future]
                 try:
-                    if future.result():
-                        triggered.append(symbol)
+                    report = future.result()
+                    if report is not None:
+                        candidates.append((symbol, report))
                 except Exception as exc:
                     print(f"[AutoPilot] Error scanning {symbol}: {exc}")
+
+        # Rank the entire market before broadcasting.  This prevents a single
+        # broad move from producing a basket of correlated calls (for example,
+        # several altcoin BUYs during the same downtrend).  Ties follow the
+        # stable watchlist order, so alert selection is deterministic.
+        watchlist_order = {symbol: index for index, symbol in enumerate(ALL_WATCHLIST)}
+        candidates.sort(key=lambda item: (-item[1].confidence, watchlist_order[item[0]]))
+        triggered: list[str] = []
+        for symbol, report in candidates[:self.max_alerts_per_cycle]:
+            if self._send_signal_alert(symbol, report):
+                triggered.append(symbol)
         return triggered
 
     def run_loop(self) -> None:
@@ -405,6 +435,7 @@ class AutoPilot:
             f"• <b>Scan Hours:</b> <code>{mode_label}</code>",
             f"• <b>Markets:</b> <code>Crypto & Memecoins ({len(ALL_WATCHLIST)} pairs)</code>",
             f"• <b>Min Confidence:</b> <code>{self.min_confidence}%</code> (A+ Setups Only)",
+            f"• <b>Risk Basket:</b> <code>Top {self.max_alerts_per_cycle} signal per scan</code>",
             "• <b>Recipients:</b> <code>Admin + Active Crypto/Bundle VIPs</code>",
             f"• <b>Signal Cooldown:</b> <code>{self.cooldown_seconds // 60} minutes</code>",
             "",
