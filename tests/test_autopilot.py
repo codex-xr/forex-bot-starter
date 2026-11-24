@@ -1,4 +1,3 @@
-Warning: fs was declared with const; use let for reassignable variables.
 import unittest
 from unittest.mock import patch
 import pandas as pd
@@ -173,3 +172,4 @@ class TestAutoPilot(unittest.TestCase):
             self.assertIn("24/7 All Hours", mock_send.call_args[0][0])
         finally:
             autopilot.schedule_mode = orig_mode
+
