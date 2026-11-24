@@ -1,3 +1,4 @@
+Warning: fs was declared with const; use let for reassignable variables.
 import unittest
 from unittest.mock import patch
 import pandas as pd
@@ -127,6 +128,34 @@ class TestAutoPilot(unittest.TestCase):
             sent = ap.scan_single_symbol("SOL_USD")
         self.assertFalse(sent)
         mock_send.assert_not_called()
+
+    @patch("bot.autopilot.send_telegram_message")
+    @patch("bot.autopilot.analyze_setup")
+    @patch("bot.autopilot.fetch_live_candles")
+    def test_cycle_sends_only_the_highest_confidence_candidate(self, mock_fetch, mock_analyze, mock_send):
+        """A market-wide move must not create a basket of correlated alerts."""
+        ap = AutoPilot(min_confidence=75, cooldown_seconds=3600, max_alerts_per_cycle=1)
+        mock_fetch.return_value = pd.DataFrame({"close": [100.0] * 100})
+
+        def reports(symbol, *_args, **_kwargs):
+            confidence = {
+                "BTC_USD": 88,
+                "ETH_USD": 95,
+                "SOL_USD": 91,
+            }.get(symbol, 40)
+            action = "BUY" if confidence >= 75 else "WAIT"
+            return SignalReport(symbol, action, confidence, "Bullish", 100.0, 98.0, 102.0, "Test")
+
+        mock_analyze.side_effect = reports
+        with patch("bot.autopilot.ALL_WATCHLIST", ["BTC_USD", "ETH_USD", "SOL_USD"]):
+            triggered = ap.run_cycle()
+
+        self.assertEqual(triggered, ["ETH_USD"])
+        self.assertEqual(mock_send.call_count, 1)
+        self.assertEqual(
+            mock_send.call_args.kwargs["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
+            "paper_enter:ETH_USD:BUY:95",
+        )
 
     @patch("bot.telegram_commands.send_telegram_message")
     def test_autopilot_golden_and_247_commands(self, mock_send):
