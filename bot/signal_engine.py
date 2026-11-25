@@ -187,6 +187,8 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     d["upper_band"] = d["sma20"] + 2.5 * d["std20"]
     d["lower_band"] = d["sma20"] - 2.5 * d["std20"]
     d["bb_width"] = ((d["upper_band"] - d["lower_band"]) / d["sma20"].replace(0, np.nan)).fillna(0.02)
+    d["hi30"] = d["high"].shift(1).rolling(30).max()
+    d["lo20"] = d["low"].shift(1).rolling(20).min()
     if "volume" in d.columns:
         vol_ma = d["volume"].shift(1).rolling(20, min_periods=5).mean().replace(0, np.nan)
         raw_rvol = (d["volume"] / vol_ma).fillna(1.0)
@@ -257,10 +259,11 @@ def htf_bias(data: pd.DataFrame) -> str:
     slope = ema50.iloc[-1] - ema50.iloc[-5] if len(ema50) >= 5 else 0.0
     if "ema200" in data.columns and len(data) >= 20:
         close = float(data["close"].iloc[-1])
+        e50 = float(ema50.iloc[-1])
         ema200 = float(data["ema200"].iloc[-1])
-        if close > ema200 and slope > 0:
+        if close > ema200 and e50 > ema200 and slope > 0:
             return "bullish"
-        if close < ema200 and slope < 0:
+        if close < ema200 and e50 < ema200 and slope < 0:
             return "bearish"
         return "neutral"
     if slope > 0:
@@ -980,32 +983,40 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
                  data: pd.DataFrame | None = None,
                  catalyst: str | None = None) -> SignalReport:
     sl_mult, tp_mult = _sl_tp_mult(symbol)
-    # Calibrate risk distance for 25x leverage (max 2.0% - 2.5% price distance)
-    max_risk_pct = 0.025 if symbol in CRYPTO_MEME else 0.020
+    is_crypto = symbol in CRYPTO_SYMBOLS or symbol in CRYPTO_MEME or symbol in CRYPTO_MID_CAP or symbol in CRYPTO_LARGE_CAP
+
+    # Calibrate 4H swing stop bounds so normal candle noise does not trigger premature stop-outs
+    # and fee drag stays small (recommended 10x-15x leverage).
+    if symbol in CRYPTO_MEME:
+        max_risk_pct = 0.045
+    elif symbol in CRYPTO_LARGE_CAP:
+        max_risk_pct = 0.035
+    elif is_crypto:
+        max_risk_pct = 0.040
+    else:
+        max_risk_pct = 0.020
     max_risk_dist = close * max_risk_pct
 
-    # Minimum risk floor to give positions healthy breathing room against normal market noise
-    if symbol in CRYPTO_MEME:
-        min_risk_pct = 0.015
-    elif symbol in CRYPTO_MID_CAP:
-        min_risk_pct = 0.010
-    elif symbol in CRYPTO_LARGE_CAP:
-        min_risk_pct = 0.008
+    if is_crypto:
+        min_risk_pct = 0.012
     elif symbol in ("XAU_USD", "US30"):
         min_risk_pct = 0.004
     else:
         min_risk_pct = 0.002
-    min_risk_dist = min(max(atr_val * 1.5, close * min_risk_pct), max_risk_dist * 0.85)
+    if is_crypto:
+        min_risk_dist = close * min_risk_pct
+    else:
+        min_risk_dist = min(max(atr_val * 1.5, close * min_risk_pct), max_risk_dist * 0.85)
 
     if action == "BUY":
-        if data is not None and len(data) >= 15:
+        if not is_crypto and data is not None and len(data) >= 15:
             swing_low = float(data.iloc[-21:-1]["low"].min())
             sl = min(close - atr_val * sl_mult, swing_low - atr_val * 0.5)
         else:
             sl = close - atr_val * sl_mult
         # Enforce minimum risk floor (sl cannot be too close to entry)
         sl = min(sl, close - min_risk_dist)
-        # 25x leverage risk clamp (sl cannot be too far from entry)
+        # Volatility tier stop cap (sl cannot exceed tier max risk)
         sl = max(sl, close - max_risk_dist)
 
         if USE_LIMIT_ORDERS:
@@ -1014,28 +1025,28 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
             if limit_entry <= sl:
                 limit_entry = close - (close - sl) * 0.3
             risk = max(limit_entry - sl, min_risk_dist)
-            tp1 = limit_entry + risk * 1.0  # Pure 1:1 TP1
-            tp2 = limit_entry + risk * 2.0  # 1:2.0 Runner Target
-            tp3 = limit_entry + risk * 3.5  # 1:3.5 Max Extension
+            tp1 = limit_entry + risk * 2.0  # 1:2.0 Core Target
+            tp2 = limit_entry + risk * 3.0  # 1:3.0 Runner Target
+            tp3 = limit_entry + risk * 4.0  # 1:4.0 Max Extension
             entry = limit_entry
             order_type = "LIMIT"
         else:
             risk = close - sl
-            tp1 = close + risk * 1.0  # Pure 1:1 TP1
-            tp2 = close + risk * 2.0  # 1:2.0 Runner Target
-            tp3 = close + risk * 3.5  # 1:3.5 Max Extension
+            tp1 = close + risk * 2.0  # 1:2.0 Core Target
+            tp2 = close + risk * 3.0  # 1:3.0 Runner Target
+            tp3 = close + risk * 4.0  # 1:4.0 Max Extension
             entry = close
             order_type = "MARKET"
         tp = tp1
     elif action == "SELL":
-        if data is not None and len(data) >= 15:
+        if not is_crypto and data is not None and len(data) >= 15:
             swing_high = float(data.iloc[-21:-1]["high"].max())
             sl = max(close + atr_val * sl_mult, swing_high + atr_val * 0.5)
         else:
             sl = close + atr_val * sl_mult
         # Enforce minimum risk floor (sl cannot be too close to entry)
         sl = max(sl, close + min_risk_dist)
-        # 25x leverage risk clamp (sl cannot be too far from entry)
+        # Volatility tier stop cap (sl cannot exceed tier max risk)
         sl = min(sl, close + max_risk_dist)
 
         if USE_LIMIT_ORDERS:
@@ -1044,16 +1055,16 @@ def _make_report(symbol: str, action: str, confidence: int, trend: str,
             if limit_entry >= sl:
                 limit_entry = close + (sl - close) * 0.3
             risk = max(sl - limit_entry, min_risk_dist)
-            tp1 = limit_entry - risk * 1.0  # Pure 1:1 TP1
-            tp2 = limit_entry - risk * 2.0  # 1:2.0 Runner Target
-            tp3 = limit_entry - risk * 3.5  # 1:3.5 Max Extension
+            tp1 = limit_entry - risk * 2.0  # 1:2.0 Core Target
+            tp2 = limit_entry - risk * 3.0  # 1:3.0 Runner Target
+            tp3 = limit_entry - risk * 4.0  # 1:4.0 Max Extension
             entry = limit_entry
             order_type = "LIMIT"
         else:
             risk = sl - close
-            tp1 = close - risk * 1.0  # Pure 1:1 TP1
-            tp2 = close - risk * 2.0  # 1:2.0 Runner Target
-            tp3 = close - risk * 3.5  # 1:3.5 Max Extension
+            tp1 = close - risk * 2.0  # 1:2.0 Core Target
+            tp2 = close - risk * 3.0  # 1:3.0 Runner Target
+            tp3 = close - risk * 4.0  # 1:4.0 Max Extension
             entry = close
             order_type = "MARKET"
         tp = tp1
@@ -1149,6 +1160,175 @@ def _quality_gate(
 
 
 _BTC_LEADER_CACHE: dict[str, object] = {"ts": 0.0, "data": None}
+_BTC_MACRO_OVERRIDE: dict | None = None
+
+
+def _trim_unclosed_4h_candle(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop trailing unclosed 4H bar when running on live exchange feeds."""
+    if df is None or len(df) < 85 or "time" not in df.columns:
+        return df
+    try:
+        t0 = pd.to_datetime(df["time"].iloc[-2], utc=True, errors="coerce")
+        t1 = pd.to_datetime(df["time"].iloc[-1], utc=True, errors="coerce")
+        if pd.isna(t0) or pd.isna(t1) or (t1 - t0) < pd.Timedelta(hours=3, minutes=30):
+            return df
+        age = pd.Timestamp.now(tz="UTC") - t1
+        if pd.Timedelta(0) <= age < pd.Timedelta(hours=3, minutes=55):
+            return df.iloc[:-1].reset_index(drop=True)
+    except Exception:
+        pass
+    return df
+
+
+def _get_btc_macro_state(symbol: str, data: pd.DataFrame | None = None) -> dict | None:
+    """Return latest 4H Bitcoin macro trend snapshot (`close`, `ema50`, `ema200`)."""
+    if isinstance(_BTC_MACRO_OVERRIDE, dict):
+        return _BTC_MACRO_OVERRIDE
+
+    if symbol == "BTC_USD" and data is not None and not data.empty:
+        last = data.iloc[-1]
+        if "ema50" in last and "ema200" in last:
+            return {
+                "close": float(last["close"]),
+                "ema20": float(last.get("ema20", last["close"])),
+                "ema50": float(last["ema50"]),
+                "ema200": float(last["ema200"]),
+                "rsi": float(last["rsi"]) if "rsi" in last and pd.notna(last["rsi"]) else 50.0,
+                "macd_hist": float(last["macd_hist"]) if "macd_hist" in last and pd.notna(last["macd_hist"]) else 0.0,
+                "bias": htf_bias(data),
+            }
+
+    if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("BACKTEST_MODE"):
+        return None
+
+    import time
+    now = time.time()
+    cached_ts = float(_BTC_LEADER_CACHE.get("ts") or 0.0)
+    cached = _BTC_LEADER_CACHE.get("data")
+    if isinstance(cached, dict) and "ema200" in cached and (now - cached_ts) <= 60.0:
+        return cached
+
+    try:
+        from bot.market_data import fetch_live_candles
+        btc_raw = fetch_live_candles("BTC_USD", interval="4h", outputsize=300)
+        btc_raw = _trim_unclosed_4h_candle(btc_raw)
+        if btc_raw is not None and len(btc_raw) >= 40:
+            btc_df = compute_indicators(btc_raw)
+            b_last = btc_df.iloc[-1]
+            btc_state = {
+                "bias": htf_bias(btc_df),
+                "close": float(b_last["close"]),
+                "ema20": float(b_last["ema20"]),
+                "ema50": float(b_last["ema50"]),
+                "ema200": float(b_last["ema200"]),
+                "rsi": float(b_last["rsi"]) if pd.notna(b_last["rsi"]) else 50.0,
+                "macd_hist": float(b_last["macd_hist"]) if pd.notna(b_last["macd_hist"]) else 0.0,
+            }
+            _BTC_LEADER_CACHE["ts"] = now
+            _BTC_LEADER_CACHE["data"] = btc_state
+            return btc_state
+    except Exception:
+        pass
+    return cached if isinstance(cached, dict) else None
+
+
+def _btc_direction_ok(btc_state: dict | None, side: str, data_last: pd.Series, require_strong_bull: bool = False) -> bool:
+    if isinstance(btc_state, dict) and "ema200" in btc_state:
+        bc = float(btc_state["close"])
+        be50 = float(btc_state["ema50"])
+        be200 = float(btc_state["ema200"])
+        if side == "BUY":
+            return bc > be200 and (not require_strong_bull or be50 > be200)
+        return bc < be200
+    # Fallback when offline BTC context unavailable (e.g., standalone unit test): use coin's macro alignment
+    cc = float(data_last["close"])
+    ce50 = float(data_last["ema50"])
+    ce200 = float(data_last["ema200"])
+    if side == "BUY":
+        return cc > ce200 and ce50 > ce200
+    return cc < ce200 and ce50 < ce200
+
+
+def _crypto_trend_pullback_4h(data: pd.DataFrame, symbol: str, btc_state: dict | None = None) -> StrategySignal:
+    if symbol not in CRYPTO_SYMBOLS or len(data) < 50:
+        return StrategySignal("4H Trend Pullback", "HOLD", 0, "")
+    last = data.iloc[-1]
+    close = float(last["close"])
+    open_p = float(last["open"])
+    ema20 = float(last["ema20"])
+    ema50 = float(last["ema50"])
+    ema200 = float(last["ema200"])
+    curr_rsi = float(last["rsi"]) if pd.notna(last["rsi"]) else 50.0
+
+    if ema50 > ema200 and _btc_direction_ok(btc_state, "BUY", last):
+        if 38.0 <= curr_rsi <= 50.0 and close > open_p and close > ema20:
+            return StrategySignal(
+                "4H Trend Pullback", "BUY", 86,
+                f"4H Trend Pullback BUY (Dip Reclaim > EMA20, RSI {curr_rsi:.0f}, Macro Bullish)",
+            )
+    elif ema50 < ema200 and _btc_direction_ok(btc_state, "SELL", last):
+        if 50.0 <= curr_rsi <= 62.0 and close < open_p and close < ema20:
+            return StrategySignal(
+                "4H Trend Pullback", "SELL", 86,
+                f"4H Trend Pullback SELL (Bounce Reject < EMA20, RSI {curr_rsi:.0f}, Macro Bearish)",
+            )
+    return StrategySignal("4H Trend Pullback", "HOLD", 0, "")
+
+
+def _crypto_bull_breakout_4h(data: pd.DataFrame, symbol: str, btc_state: dict | None = None) -> StrategySignal:
+    if symbol not in CRYPTO_SYMBOLS or len(data) < 50:
+        return StrategySignal("4H Bull Breakout", "HOLD", 0, "")
+    last = data.iloc[-1]
+    hi30 = last.get("hi30")
+    if hi30 is None or pd.isna(hi30):
+        return StrategySignal("4H Bull Breakout", "HOLD", 0, "")
+    close = float(last["close"])
+    ema20 = float(last["ema20"])
+    ema50 = float(last["ema50"])
+    ema200 = float(last["ema200"])
+    curr_rsi = float(last["rsi"]) if pd.notna(last["rsi"]) else 50.0
+    rvol = float(last["rvol"]) if "rvol" in last and pd.notna(last["rvol"]) else 1.0
+
+    if (
+        ema50 > ema200
+        and ema20 > ema50
+        and _btc_direction_ok(btc_state, "BUY", last, require_strong_bull=True)
+        and close > float(hi30)
+        and curr_rsi <= 68.0
+        and rvol >= 1.15
+    ):
+        return StrategySignal(
+            "4H Bull Breakout", "BUY", 84,
+            f"4H Bull Breakout BUY (30-Bar High Break, RVol {rvol:.1f}x, RSI {curr_rsi:.0f})",
+        )
+    return StrategySignal("4H Bull Breakout", "HOLD", 0, "")
+
+
+def _crypto_bear_breakdown_4h(data: pd.DataFrame, symbol: str, btc_state: dict | None = None) -> StrategySignal:
+    if symbol not in CRYPTO_SYMBOLS or len(data) < 50:
+        return StrategySignal("4H Bear Breakdown", "HOLD", 0, "")
+    last = data.iloc[-1]
+    lo20 = last.get("lo20")
+    if lo20 is None or pd.isna(lo20):
+        return StrategySignal("4H Bear Breakdown", "HOLD", 0, "")
+    close = float(last["close"])
+    ema50 = float(last["ema50"])
+    ema200 = float(last["ema200"])
+    curr_rsi = float(last["rsi"]) if pd.notna(last["rsi"]) else 50.0
+    rvol = float(last["rvol"]) if "rvol" in last and pd.notna(last["rvol"]) else 1.0
+
+    if (
+        ema50 < ema200
+        and _btc_direction_ok(btc_state, "SELL", last)
+        and close < float(lo20)
+        and rvol >= 1.15
+        and curr_rsi > 32.0
+    ):
+        return StrategySignal(
+            "4H Bear Breakdown", "SELL", 85,
+            f"4H Bear Breakdown SELL (20-Bar Support Break, RVol {rvol:.1f}x, RSI {curr_rsi:.0f})",
+        )
+    return StrategySignal("4H Bear Breakdown", "HOLD", 0, "")
 
 
 def _check_btc_leader_veto(symbol: str, action: str) -> tuple[bool, str]:
@@ -1162,30 +1342,7 @@ def _check_btc_leader_veto(symbol: str, action: str) -> tuple[bool, str]:
     if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("BACKTEST_MODE"):
         return False, ""
 
-    import time
-    now = time.time()
-    cached_ts = float(_BTC_LEADER_CACHE.get("ts") or 0.0)
-    btc_state = _BTC_LEADER_CACHE.get("data")
-
-    if not isinstance(btc_state, dict) or (now - cached_ts) > 25.0:
-        try:
-            from bot.market_data import fetch_live_candles
-            btc_raw = fetch_live_candles("BTC_USD", outputsize=90)
-            if btc_raw is not None and len(btc_raw) >= 40:
-                btc_df = compute_indicators(btc_raw)
-                b_last = btc_df.iloc[-1]
-                btc_state = {
-                    "bias": htf_bias(btc_df),
-                    "close": float(b_last["close"]),
-                    "ema20": float(b_last["ema20"]),
-                    "rsi": float(b_last["rsi"]) if pd.notna(b_last["rsi"]) else 50.0,
-                    "macd_hist": float(b_last["macd_hist"]) if pd.notna(b_last["macd_hist"]) else 0.0,
-                }
-                _BTC_LEADER_CACHE["ts"] = now
-                _BTC_LEADER_CACHE["data"] = btc_state
-        except Exception:
-            return False, ""
-
+    btc_state = _get_btc_macro_state("BTC_USD")
     if not isinstance(btc_state, dict):
         return False, ""
 
@@ -1228,18 +1385,12 @@ def _analyze_crypto_setup(
         except Exception as sm_err:
             print(f"[SignalEngine] Binance smart money error for {symbol}: {sm_err}")
 
+    btc_state = _get_btc_macro_state(symbol, data)
     strategies = [
-        _smc_sweep(data, bias, symbol),
-        _mean_reversion(data, symbol, bias),
-        _crypto_momentum_surge(data, symbol),
-        _trend_pullback_reclaim(data, symbol),
-        _vwap_orderflow_surge(data, symbol, bias),
-        _volatility_squeeze_breakout(data, symbol, bias),
+        _crypto_trend_pullback_4h(data, symbol, btc_state),
+        _crypto_bull_breakout_4h(data, symbol, btc_state),
+        _crypto_bear_breakdown_4h(data, symbol, btc_state),
     ]
-    # News is live-only: replaying today's headlines against historical candles
-    # would introduce look-ahead bias into the backtest.
-    if not backtest_mode:
-        strategies.append(_news_catalyst_momentum(data, symbol, bias))
 
     report = _quality_gate(strategies, bias, data, symbol, min_confidence)
 
@@ -1373,6 +1524,7 @@ def analyze_setup(
             "Not enough candle data",
         )
 
+    prices = _trim_unclosed_4h_candle(prices)
     data = compute_indicators(prices)
     bias = htf_bias(data)
 
@@ -1381,7 +1533,7 @@ def analyze_setup(
 
 def compute_trade_levels(symbol: str, action: str, prices: pd.DataFrame) -> SignalReport:
     """
-    Computes exact structural Entry, Stop Loss, and 1:1 TP1 for a requested BUY/SELL action,
+    Computes exact structural Entry, Stop Loss, and 1:2 TP1 for a requested BUY/SELL action,
     even if a re-scan moments later returned WAIT or a different direction.
     """
     clean_act = "BUY" if str(action).upper() in ("BUY", "LONG") else "SELL"

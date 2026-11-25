@@ -360,15 +360,23 @@ class TestSmartMoneyVeto:
 
 
 class TestLeverageStopLossClamp:
-    def test_crypto_sl_clamped_for_25x_leverage(self):
+    def test_crypto_sl_clamped_by_volatility_tier(self):
         from bot.signal_engine import _make_report
         prices = _ohcv_close([100.0] * 100)
         prices.loc[80, "low"] = 70.0
         data = compute_indicators(prices)
-        report = _make_report("BTC_USD", "BUY", 90, "Bullish", 100.0, 0.5, "Breakout", data=data)
-        # BTC is large cap: max risk is 2.0% => sl >= 98.0
-        assert report.stop_loss is not None
-        assert report.stop_loss >= 98.0
+        # Large cap: max risk 3.5% => sl >= 96.5
+        btc_rep = _make_report("BTC_USD", "BUY", 90, "Bullish", 100.0, 5.0, "Breakout", data=data)
+        assert btc_rep.stop_loss is not None
+        assert btc_rep.stop_loss >= 96.5
+        # Mid cap: max risk 4.0% => sl >= 96.0
+        sol_rep = _make_report("SOL_USD", "BUY", 90, "Bullish", 100.0, 5.0, "Breakout", data=data)
+        assert sol_rep.stop_loss is not None
+        assert sol_rep.stop_loss >= 96.0
+        # Meme: max risk 4.5% => sl >= 95.5
+        doge_rep = _make_report("DOGE_USD", "BUY", 90, "Bullish", 100.0, 5.0, "Breakout", data=data)
+        assert doge_rep.stop_loss is not None
+        assert doge_rep.stop_loss >= 95.5
 
 
 
@@ -384,7 +392,7 @@ class TestLimitOrderSignals:
         assert report.entry < 50000.0  # Discount pullback
         assert report.stop_loss is not None
         assert report.entry > report.stop_loss
-        expected_tp1 = round(report.entry + (report.entry - report.stop_loss) * 1.0, 8)
+        expected_tp1 = round(report.entry + (report.entry - report.stop_loss) * 2.0, 8)
         assert round(report.tp1, 4) == round(expected_tp1, 4)
 
     def test_crypto_sell_limit_pricing(self, monkeypatch):
@@ -398,7 +406,7 @@ class TestLimitOrderSignals:
         assert report.entry > 50000.0  # Premium pullback
         assert report.stop_loss is not None
         assert report.entry < report.stop_loss
-        expected_tp1 = round(report.entry - (report.stop_loss - report.entry) * 1.0, 8)
+        expected_tp1 = round(report.entry - (report.stop_loss - report.entry) * 2.0, 8)
         assert round(report.tp1, 4) == round(expected_tp1, 4)
 
     def test_market_order_default_and_entry_zone(self):
@@ -416,10 +424,10 @@ class TestLimitOrderSignals:
         import bot.signal_engine as se
         prices = _ohcv_close([85000.0] * 100)
         data = compute_indicators(prices)
-        # Low ATR of 50 on BTC should still have at least 0.8% ($680) risk breathing room
+        # Low ATR on crypto still keeps at least 1.2% ($1,020 on BTC @ 85k) breathing room
         report = se._make_report("BTC_USD", "BUY", 90, "Bullish", 85000.0, 50.0, "Breakout", data=data)
         sl_dist = report.entry - report.stop_loss
-        assert sl_dist >= 85000.0 * 0.008  # at least $680
+        assert sl_dist >= 85000.0 * 0.012  # at least $1020
 
     def test_limit_order_toggle_reversibility(self, monkeypatch):
         import bot.signal_engine as se
@@ -565,6 +573,62 @@ class TestRSIExhaustionGuard:
         report = _quality_gate(strategies, "bullish", data, "BTC_USD", min_confidence=75)
         assert report.action == "WAIT"
         assert report.confidence < 75
+
+
+class TestCrypto4HEngine:
+    def test_4h_trend_pullback_buy_and_1_to_2_rr(self):
+        import bot.signal_engine as se
+        # Steady bull uptrend followed by healthy RSI dip (38-50) and green reclaim above EMA20
+        closes = [100.0 + i * 0.6 for i in range(210)]
+        for k in range(8):
+            closes.append(closes[-1] - 1.6)
+        closes.append(closes[-1] + 2.2)
+        prices = _ohcv_close(closes)
+        prices["open"] = prices["close"].shift(1).fillna(closes[0])
+        prices.iloc[-1, prices.columns.get_loc("open")] = closes[-1] - 2.0
+        data = compute_indicators(prices)
+        last = data.iloc[-1]
+        assert last["ema50"] > last["ema200"]
+        assert 38.0 <= last["rsi"] <= 55.0
+        btc_ok = {"close": 90000.0, "ema50": 85000.0, "ema200": 80000.0}
+        sig = se._crypto_trend_pullback_4h(data, "ETH_USD", btc_ok)
+        if 38.0 <= last["rsi"] <= 50.0 and last["close"] > last["ema20"]:
+            assert sig.action == "BUY"
+            assert sig.confidence == 86
+        rep = se._make_report("ETH_USD", "BUY", 86, "Bullish", float(last["close"]), float(last["atr"]), "Test", data=data)
+        risk = rep.entry - rep.stop_loss
+        assert round(rep.tp1 - rep.entry, 4) == round(risk * 2.0, 4)
+
+    def test_4h_bear_breakdown_respects_btc_and_rvol(self):
+        import bot.signal_engine as se
+        closes = [200.0 - i * 0.4 for i in range(220)] + [105.0]
+        prices = _ohcv_close(closes)
+        prices["volume"] = [1000.0] * 220 + [2000.0]
+        data = compute_indicators(prices)
+        btc_bear = {"close": 60000.0, "ema50": 65000.0, "ema200": 70000.0}
+        btc_bull = {"close": 90000.0, "ema50": 85000.0, "ema200": 80000.0}
+        # Counter-BTC bear breakdown must stay HOLD
+        assert se._crypto_bear_breakdown_4h(data, "SOL_USD", btc_bull).action == "HOLD"
+        # Respects RSI > 32 exhaustion guard
+        sig_bear = se._crypto_bear_breakdown_4h(data, "SOL_USD", btc_bear)
+        assert sig_bear.action in ("SELL", "HOLD")
+
+    def test_trim_unclosed_4h_candle_drops_live_forming_bar(self):
+        import bot.signal_engine as se
+        now = pd.Timestamp.now(tz="UTC").floor("4h")
+        times = pd.date_range(end=now, periods=90, freq="4h", tz="UTC")
+        df = pd.DataFrame({
+            "time": times, "open": [100.0] * 90, "high": [101.0] * 90,
+            "low": [99.0] * 90, "close": [100.0] * 90, "volume": [100.0] * 90,
+        })
+        trimmed = se._trim_unclosed_4h_candle(df)
+        # If current wall-clock time is at least 1s into the candle block and < 3h55m, trailing forming bar is dropped
+        age = pd.Timestamp.now(tz="UTC") - now
+        if pd.Timedelta(0) <= age < pd.Timedelta(hours=3, minutes=55):
+            assert len(trimmed) == 89
+        else:
+            assert len(trimmed) == 90
+
 
 
 

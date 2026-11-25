@@ -109,7 +109,7 @@ class AutoPilot:
     def __init__(
         self,
         min_confidence: int = 75,
-        cooldown_seconds: int = 3600,
+        cooldown_seconds: int = 14400,
         scan_delay_seconds: float = 45.0,
         broadcast_to_vips: bool = False,
         schedule_mode: str = "24/7",
@@ -263,7 +263,7 @@ class AutoPilot:
             return None
 
         try:
-            prices = fetch_live_candles(symbol)
+            prices = fetch_live_candles(symbol, interval="4h", outputsize=300)
         except Exception:
             return None
 

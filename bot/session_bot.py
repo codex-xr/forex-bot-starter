@@ -67,7 +67,7 @@ ALL_WATCHLIST = list(dict.fromkeys(
 
 def scan_symbol_report(symbol: str, min_confidence: int, session_key: str | None = None) -> tuple[str, object | None]:
     try:
-        prices = fetch_live_candles(symbol)
+        prices = fetch_live_candles(symbol, interval="4h", outputsize=300)
     except Exception as exc:
         return f"{symbol}: Data unavailable ({exc})", None
 

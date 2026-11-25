@@ -413,7 +413,7 @@ def _open_crypto_trade_from_signal(
     report=None,
 ) -> None:
     if candles is None:
-        candles = fetch_live_candles(symbol)
+        candles = fetch_live_candles(symbol, interval="4h", outputsize=300)
     curr_close = float(candles.iloc[-1]["close"])
     if report is None:
         report = analyze_setup(symbol, candles, min_confidence=60)
@@ -1403,7 +1403,7 @@ def handle_message(message: dict) -> None:
                     req_action = None
 
                 try:
-                    candles = fetch_live_candles(target_sym)
+                    candles = fetch_live_candles(target_sym, interval="4h", outputsize=300)
                     report = analyze_setup(target_sym, candles, min_confidence=60)
                     if req_action:
                         action = req_action
