@@ -11,6 +11,6 @@ jobs:
     steps:
       - name: Trigger 24/7 Trade Monitor & Auto-Pilot Live Calls on Vercel
         run: |
-          resp=$(curl -fsS -X POST --max-time 55 "https://forex-bot-starter-codex.vercel.app/api/cron")
+          resp=$(curl -fsS -X POST -H "Content-Type: application/json" -d '{"action":"run_cron"}' --max-time 55 "https://forex-bot-starter-codex.vercel.app/api/cron")
           echo "$resp"
           echo "$resp" | grep -Eq '"status":[[:space:]]*"success"'

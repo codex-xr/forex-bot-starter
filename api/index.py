@@ -26,17 +26,29 @@ else:
 
 
 class handler(BaseHTTPRequestHandler):
+    def _is_cron_request(self) -> bool:
+        path = self.path.split("?")[0].rstrip("/")
+        orig_path = (
+            self.headers.get("x-vercel-original-path")
+            or self.headers.get("x-matched-path")
+            or self.headers.get("x-invoke-path")
+            or ""
+        ).split("?")[0].rstrip("/")
+        return path.endswith("/cron") or orig_path.endswith("/cron") or "cron=" in self.path
+
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
         post_data = self.rfile.read(content_length)
         resp_payload = {"ok": True}
 
         try:
-            update = json.loads(post_data.decode("utf-8"))
-            action = update.get("action")
+            update = json.loads(post_data.decode("utf-8")) if post_data.strip() else {}
+            action = update.get("action") if isinstance(update, dict) else None
             if action in ("check_trades", "run_cron", "run_autopilot", "cron") and run_cron_cycle:
                 resp_payload = run_cron_cycle(run_autopilot=(action != "check_trades"))
-            elif "callback_query" in update:
+            elif self._is_cron_request() and run_cron_cycle:
+                resp_payload = run_cron_cycle(run_autopilot=("mode=trades" not in self.path))
+            elif isinstance(update, dict) and "callback_query" in update:
                 cb = update["callback_query"]
                 qid = cb.get("id")
                 if qid:
@@ -46,7 +58,7 @@ class handler(BaseHTTPRequestHandler):
                     }
                 if handle_callback_query:
                     handle_callback_query(cb)
-            elif "message" in update and handle_message:
+            elif isinstance(update, dict) and "message" in update and handle_message:
                 handle_message(update["message"])
         except Exception as exc:
             print(f"[Vercel Webhook] Error: {exc}")
@@ -92,14 +104,7 @@ class handler(BaseHTTPRequestHandler):
             }, indent=2).encode("utf-8"))
             return
 
-        orig_path = (
-            self.headers.get("x-vercel-original-path")
-            or self.headers.get("x-matched-path")
-            or self.headers.get("x-invoke-path")
-            or ""
-        ).split("?")[0].rstrip("/")
-        is_cron = path.endswith("/cron") or orig_path.endswith("/cron") or "cron=" in self.path
-        if is_cron and run_cron_cycle:
+        if self._is_cron_request() and run_cron_cycle:
             res = run_cron_cycle(run_autopilot=("mode=trades" not in self.path))
             self.send_response(200)
             self.send_header("Content-type", "application/json")

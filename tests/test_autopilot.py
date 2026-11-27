@@ -173,3 +173,31 @@ class TestAutoPilot(unittest.TestCase):
         finally:
             autopilot.schedule_mode = orig_mode
 
+    @patch("api.index.run_cron_cycle", return_value={"ok": True, "status": "success", "symbols_scanned": 25})
+    def test_vercel_index_post_cron_without_body_runs_cycle(self, mock_cron):
+        import io
+        import json
+        from api.index import handler
+
+        h = object.__new__(handler)
+        h.path = "/api/cron"
+        h.headers = {"Content-Length": "0"}
+        h.rfile = io.BytesIO(b"")
+        h.wfile = io.BytesIO()
+        h.send_response = lambda *_args: None
+        h.send_header = lambda *_args: None
+        h.end_headers = lambda: None
+
+        h.do_POST()
+        mock_cron.assert_called_once_with(run_autopilot=True)
+        body = json.loads(h.wfile.getvalue().decode("utf-8"))
+        self.assertEqual(body["status"], "success")
+
+        mock_cron.reset_mock()
+        h.path = "/api/cron?mode=trades"
+        h.rfile = io.BytesIO(b"")
+        h.wfile = io.BytesIO()
+        h.do_POST()
+        mock_cron.assert_called_once_with(run_autopilot=False)
+
+
